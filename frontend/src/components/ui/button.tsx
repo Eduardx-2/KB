@@ -13,10 +13,14 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 const variantClasses: Record<Variant, string> = {
-  primary: "bg-neutral-900 text-white hover:bg-neutral-700 disabled:bg-neutral-300",
-  secondary: "bg-neutral-100 text-neutral-900 hover:bg-neutral-200 disabled:text-neutral-400",
-  outline: "border border-neutral-300 text-neutral-800 hover:bg-neutral-50 disabled:text-neutral-300",
-  ghost: "text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900 disabled:text-neutral-300",
+  primary:
+    "bg-neutral-900 text-white hover:bg-neutral-700 disabled:bg-neutral-300 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-white dark:disabled:bg-neutral-700 dark:disabled:text-neutral-500",
+  secondary:
+    "bg-neutral-100 text-neutral-900 hover:bg-neutral-200 disabled:text-neutral-400 dark:bg-neutral-800 dark:text-neutral-100 dark:hover:bg-neutral-700",
+  outline:
+    "border border-neutral-300 text-neutral-800 hover:bg-neutral-50 disabled:text-neutral-300 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-800",
+  ghost:
+    "text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900 disabled:text-neutral-300 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100",
   danger: "bg-red-600 text-white hover:bg-red-700 disabled:bg-red-200",
 };
 
@@ -34,7 +38,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
         disabled={disabled || loading}
         className={cn(
           "inline-flex items-center justify-center rounded-lg font-medium transition-colors duration-150",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-900 focus-visible:ring-offset-2",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-900 focus-visible:ring-offset-2 dark:focus-visible:ring-neutral-100",
           "disabled:cursor-not-allowed",
           variantClasses[variant],
           sizeClasses[size],

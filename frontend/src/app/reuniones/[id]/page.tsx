@@ -125,7 +125,7 @@ export default function RequirementBoardPage() {
               Transcript
             </Button>
             {isApproved ? (
-              <span className="flex items-center gap-1.5 rounded-lg bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700">
+              <span className="flex items-center gap-1.5 rounded-lg bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400">
                 <ShieldCheck className="size-4" />
                 Aprobado
               </span>
@@ -139,10 +139,10 @@ export default function RequirementBoardPage() {
         }
       />
 
-      <div className="border-b border-neutral-200 bg-white px-4 pb-4 sm:px-8">
+      <div className="border-b border-neutral-200 bg-white px-4 pb-4 sm:px-8 dark:border-neutral-800 dark:bg-neutral-950">
         <div className="flex flex-wrap items-center gap-2">
           <RequirementStatusBadge status={requirement.status} />
-          <span className="text-xs text-neutral-400">
+          <span className="text-xs text-neutral-400 dark:text-neutral-500">
             creado {formatRelativeTime(requirement.created_at)} · {tickets.length} tickets
           </span>
         </div>
@@ -181,8 +181,8 @@ export default function RequirementBoardPage() {
       />
 
       <Dialog open={transcriptOpen} onClose={() => setTranscriptOpen(false)} className="max-w-2xl">
-        <h2 className="text-lg font-semibold text-neutral-900">Transcript original</h2>
-        <div className="mt-3 max-h-[60vh] overflow-y-auto rounded-xl bg-neutral-50 p-4 text-sm leading-relaxed text-neutral-600">
+        <h2 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">Transcript original</h2>
+        <div className="mt-3 max-h-[60vh] overflow-y-auto rounded-xl bg-neutral-50 p-4 text-sm leading-relaxed text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
           {requirement.raw_transcript || "Sin transcript disponible."}
         </div>
       </Dialog>

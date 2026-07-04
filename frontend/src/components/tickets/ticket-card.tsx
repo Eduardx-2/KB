@@ -31,13 +31,13 @@ export function TicketCard({
       ref={setNodeRef}
       style={style}
       className={cn(
-        "group rounded-xl border border-neutral-200 bg-white p-3.5 shadow-sm transition",
-        isDragging ? "z-50 opacity-90 shadow-lg" : "hover:border-neutral-300 hover:shadow-md"
+        "group rounded-xl border border-neutral-200 bg-white p-3.5 shadow-sm transition dark:border-neutral-800 dark:bg-neutral-900",
+        isDragging ? "z-50 opacity-90 shadow-lg" : "hover:border-neutral-300 hover:shadow-md dark:hover:border-neutral-700"
       )}
     >
       <div className="flex items-start justify-between gap-2">
         <button onClick={onOpen} className="min-w-0 flex-1 text-left">
-          <p className="line-clamp-2 text-sm font-medium text-neutral-900">{ticket.title}</p>
+          <p className="line-clamp-2 text-sm font-medium text-neutral-900 dark:text-neutral-100">{ticket.title}</p>
         </button>
         <button
           {...attributes}
@@ -51,7 +51,7 @@ export function TicketCard({
 
       <div className="mt-3 flex flex-wrap items-center gap-1.5">
         <PriorityBadge priority={ticket.priority} />
-        <Badge className="bg-neutral-100 text-neutral-600">{SKILL_LABELS[ticket.required_skill]}</Badge>
+        <Badge className="bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">{SKILL_LABELS[ticket.required_skill]}</Badge>
         {ticket.risk_pct > 0 && <RiskBadge pct={ticket.risk_pct} reasoning={ticket.reasoning} />}
       </div>
 
@@ -63,7 +63,7 @@ export function TicketCard({
         {assignee ? (
           <Avatar name={assignee.name} size="sm" />
         ) : (
-          <span className="rounded-full border border-dashed border-neutral-300 px-2 py-0.5 text-[10px] text-neutral-400">
+          <span className="rounded-full border border-dashed border-neutral-300 px-2 py-0.5 text-[10px] text-neutral-400 dark:border-neutral-700">
             Sin asignar
           </span>
         )}

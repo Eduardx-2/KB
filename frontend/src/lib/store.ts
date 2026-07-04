@@ -168,6 +168,12 @@ export const useAppStore = create<AppState>()(
     }),
     {
       name: "kb-meeting-pm-demo",
+      partialize: (state) => ({
+        members: state.members,
+        requirements: state.requirements,
+        tickets: state.tickets,
+        agentLogs: state.agentLogs,
+      }),
       onRehydrateStorage: () => (state) => {
         state?.setHydrated();
       },

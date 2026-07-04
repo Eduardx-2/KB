@@ -16,10 +16,10 @@ export function PipelineSteps({ steps }: { steps: PipelineStep[] }) {
             <div
               className={cn(
                 "flex size-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold transition-colors",
-                step.status === "done" && "bg-neutral-900 text-white",
-                step.status === "active" && "bg-neutral-900 text-white",
+                step.status === "done" && "bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900",
+                step.status === "active" && "bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900",
                 step.status === "error" && "bg-red-600 text-white",
-                step.status === "pending" && "bg-neutral-100 text-neutral-400"
+                step.status === "pending" && "bg-neutral-100 text-neutral-400 dark:bg-neutral-800 dark:text-neutral-500"
               )}
             >
               {step.status === "done" && <Check className="size-3.5" />}
@@ -31,7 +31,9 @@ export function PipelineSteps({ steps }: { steps: PipelineStep[] }) {
               <div
                 className={cn(
                   "my-1 h-8 w-px",
-                  step.status === "done" ? "bg-neutral-900" : "bg-neutral-200"
+                  step.status === "done"
+                    ? "bg-neutral-900 dark:bg-neutral-100"
+                    : "bg-neutral-200 dark:bg-neutral-700"
                 )}
               />
             )}
@@ -40,7 +42,9 @@ export function PipelineSteps({ steps }: { steps: PipelineStep[] }) {
             <p
               className={cn(
                 "pt-0.5 text-sm font-medium",
-                step.status === "pending" ? "text-neutral-400" : "text-neutral-900"
+                step.status === "pending"
+                  ? "text-neutral-400 dark:text-neutral-500"
+                  : "text-neutral-900 dark:text-neutral-100"
               )}
             >
               {step.label}

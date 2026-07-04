@@ -17,25 +17,25 @@ export function riskColorClasses(pct: number) {
     case "low":
       return {
         dot: "bg-emerald-500",
-        text: "text-emerald-700",
-        bg: "bg-emerald-50",
-        ring: "ring-emerald-200",
+        text: "text-emerald-700 dark:text-emerald-300",
+        bg: "bg-emerald-50 dark:bg-emerald-950",
+        ring: "ring-emerald-200 dark:ring-emerald-800",
         label: "Riesgo bajo",
       };
     case "medium":
       return {
         dot: "bg-amber-500",
-        text: "text-amber-700",
-        bg: "bg-amber-50",
-        ring: "ring-amber-200",
+        text: "text-amber-700 dark:text-amber-300",
+        bg: "bg-amber-50 dark:bg-amber-950",
+        ring: "ring-amber-200 dark:ring-amber-800",
         label: "Riesgo medio",
       };
     default:
       return {
         dot: "bg-red-500",
-        text: "text-red-700",
-        bg: "bg-red-50",
-        ring: "ring-red-200",
+        text: "text-red-700 dark:text-red-300",
+        bg: "bg-red-50 dark:bg-red-950",
+        ring: "ring-red-200 dark:ring-red-800",
         label: "Riesgo alto",
       };
   }
@@ -48,11 +48,11 @@ export function priorityLabel(p: Priority) {
 export function priorityClasses(p: Priority) {
   switch (p) {
     case "high":
-      return "bg-neutral-900 text-white";
+      return "bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900";
     case "medium":
-      return "bg-neutral-200 text-neutral-800";
+      return "bg-neutral-200 text-neutral-800 dark:bg-neutral-700 dark:text-neutral-200";
     default:
-      return "bg-neutral-100 text-neutral-500";
+      return "bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400";
   }
 }
 
@@ -72,9 +72,9 @@ export const SKILL_LABELS: Record<Skill, string> = {
 };
 
 export function loadColorClasses(load: number) {
-  if (load < 40) return { bar: "bg-emerald-500", text: "text-emerald-700" };
-  if (load <= 70) return { bar: "bg-amber-500", text: "text-amber-700" };
-  return { bar: "bg-red-500", text: "text-red-700" };
+  if (load < 40) return { bar: "bg-emerald-500", text: "text-emerald-600 dark:text-emerald-400" };
+  if (load <= 70) return { bar: "bg-amber-400", text: "text-amber-600 dark:text-amber-400" };
+  return { bar: "bg-red-500", text: "text-red-600 dark:text-red-400" };
 }
 
 export function initials(name: string) {

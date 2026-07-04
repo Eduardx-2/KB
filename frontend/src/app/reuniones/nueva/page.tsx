@@ -111,7 +111,7 @@ export default function NuevaReunionPage() {
         <Card className="p-5 sm:p-6">
           <div className="space-y-5">
             <div>
-              <label className="mb-1.5 block text-sm font-medium text-neutral-800">
+              <label className="mb-1.5 block text-sm font-medium text-neutral-800 dark:text-neutral-200">
                 Título de la reunión <span className="font-normal text-neutral-400">(opcional)</span>
               </label>
               <input
@@ -119,17 +119,19 @@ export default function NuevaReunionPage() {
                 onChange={(e) => setTitle(e.target.value)}
                 disabled={processing}
                 placeholder="Ej. Requerimientos de Finanzas — ERP"
-                className="w-full rounded-lg border border-neutral-200 px-3.5 py-2.5 text-sm outline-none transition focus:border-neutral-400 focus:ring-4 focus:ring-neutral-100 disabled:bg-neutral-50"
+                className="w-full rounded-lg border border-neutral-200 bg-white px-3.5 py-2.5 text-sm text-neutral-900 outline-none transition focus:border-neutral-400 focus:ring-4 focus:ring-neutral-100 disabled:bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100 dark:placeholder-neutral-500 dark:focus:border-neutral-500 dark:disabled:bg-neutral-900"
               />
             </div>
 
-            <div className="flex gap-1 rounded-lg bg-neutral-100 p-1">
+            <div className="flex gap-1 rounded-lg bg-neutral-100 p-1 dark:bg-neutral-800">
               <button
                 onClick={() => setSource("text")}
                 disabled={processing}
                 className={cn(
                   "flex flex-1 items-center justify-center gap-2 rounded-md py-2 text-sm font-medium transition-colors",
-                  source === "text" ? "bg-white text-neutral-900 shadow-sm" : "text-neutral-500 hover:text-neutral-800"
+                  source === "text"
+                    ? "bg-white text-neutral-900 shadow-sm dark:bg-neutral-700 dark:text-neutral-100"
+                    : "text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
                 )}
               >
                 <FileText className="size-4" />
@@ -140,7 +142,9 @@ export default function NuevaReunionPage() {
                 disabled={processing}
                 className={cn(
                   "flex flex-1 items-center justify-center gap-2 rounded-md py-2 text-sm font-medium transition-colors",
-                  source === "audio" ? "bg-white text-neutral-900 shadow-sm" : "text-neutral-500 hover:text-neutral-800"
+                  source === "audio"
+                    ? "bg-white text-neutral-900 shadow-sm dark:bg-neutral-700 dark:text-neutral-100"
+                    : "text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
                 )}
               >
                 <Mic className="size-4" />
@@ -156,20 +160,20 @@ export default function NuevaReunionPage() {
                   disabled={processing}
                   rows={12}
                   placeholder="Pegá acá la transcripción de la reunión de requerimientos…"
-                  className="w-full resize-none rounded-lg border border-neutral-200 px-3.5 py-3 text-sm leading-relaxed outline-none transition focus:border-neutral-400 focus:ring-4 focus:ring-neutral-100 disabled:bg-neutral-50"
+                  className="w-full resize-none rounded-lg border border-neutral-200 bg-white px-3.5 py-3 text-sm leading-relaxed text-neutral-900 outline-none transition focus:border-neutral-400 focus:ring-4 focus:ring-neutral-100 disabled:bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100 dark:placeholder-neutral-500 dark:disabled:bg-neutral-900"
                 />
                 <div className="mt-2 flex flex-wrap gap-2">
                   <button
                     onClick={() => setText(GOLDEN_TRANSCRIPT)}
                     disabled={processing}
-                    className="rounded-full border border-neutral-200 px-3 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-50"
+                    className="rounded-full border border-neutral-200 px-3 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800"
                   >
                     Usar transcript dorado (ERP)
                   </button>
                   <button
                     onClick={() => setText(REALISTIC_TRANSCRIPT)}
                     disabled={processing}
-                    className="rounded-full border border-neutral-200 px-3 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-50"
+                    className="rounded-full border border-neutral-200 px-3 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800"
                   >
                     Usar transcript realista (CRM)
                   </button>
@@ -195,18 +199,18 @@ export default function NuevaReunionPage() {
 
         <Card className="h-fit p-5 sm:p-6">
           <div className="mb-4 flex items-center gap-2">
-            <div className="flex size-7 items-center justify-center rounded-lg bg-neutral-900 text-white">
+            <div className="flex size-7 items-center justify-center rounded-lg bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900">
               <Sparkles className="size-3.5" />
             </div>
-            <h3 className="text-sm font-semibold text-neutral-900">Qué va a pasar</h3>
+            <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Qué va a pasar</h3>
           </div>
 
           {processing ? (
             <PipelineSteps steps={steps} />
           ) : (
-            <ol className="space-y-3 text-sm text-neutral-500">
+            <ol className="space-y-3 text-sm text-neutral-500 dark:text-neutral-400">
               <li className="flex gap-2">
-                <span className="font-semibold text-neutral-400">1.</span>
+                <span className="font-semibold text-neutral-400 dark:text-neutral-500">1.</span>
                 {source === "audio"
                   ? "ElevenLabs transcribe el audio a texto."
                   : "Tu transcript se envía tal cual al Meeting Agent."}
