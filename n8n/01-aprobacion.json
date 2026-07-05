@@ -1,0 +1,285 @@
+{
+  "name": "WF1 — Aprobación de Plan",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "plan-aprobado",
+        "responseMode": "onReceived",
+        "responseData": "{\"received\":true,\"message\":\"Procesando notificaciones...\"}",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0001-0001-0001-000000000001",
+      "name": "Plan Aprobado Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "plan-aprobado-webhook-id"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extrae cada ticket del payload y le adjunta el contexto de la aprobación.\n// Input esperado del backend:\n// { approval_id, requirement_id, requirement_title, project_name,\n//   approved_by, manager_email, tickets: [{...}] }\nconst body = $input.first().json;\nconst base = {\n  approval_id: body.approval_id,\n  requirement_id: body.requirement_id,\n  requirement_title: body.requirement_title || 'Sin título',\n  project_name: body.project_name || 'Sin proyecto',\n  approved_by: body.approved_by || 'Manager',\n  manager_email: body.manager_email || ''\n};\n\nif (!Array.isArray(body.tickets) || body.tickets.length === 0) {\n  throw new Error('El payload no contiene tickets.');\n}\n\nreturn body.tickets.map(ticket => ({\n  json: { ...base, ...ticket }\n}));"
+      },
+      "id": "a1b2c3d4-0001-0001-0001-000000000002",
+      "name": "Expandir Tickets",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "filter-email",
+              "leftValue": "={{ $json.assignee_email }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "notEmpty" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0001-0001-0001-000000000003",
+      "name": "Filtrar Sin Email",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.SMTP_FROM }}",
+        "toEmail": "={{ $json.assignee_email }}",
+        "subject": "=✅ Plan aprobado — se te asignó: {{ $json.title }}",
+        "emailFormat": "html",
+        "message": "=<div style=\"font-family:sans-serif;max-width:600px;margin:0 auto\">\n  <h2 style=\"color:#111\">Ticket asignado: {{ $json.title }}</h2>\n  <p>Hola <strong>{{ $json.assignee_name }}</strong>,</p>\n  <p>El plan <strong>{{ $json.requirement_title }}</strong> del proyecto <strong>{{ $json.project_name }}</strong> fue aprobado por <strong>{{ $json.approved_by }}</strong>.</p>\n  <table style=\"border-collapse:collapse;width:100%;margin-top:16px\">\n    <tr style=\"background:#f5f5f5\">\n      <td style=\"padding:8px 12px;font-weight:600\">Campo</td>\n      <td style=\"padding:8px 12px;font-weight:600\">Valor</td>\n    </tr>\n    <tr><td style=\"padding:8px 12px;border-top:1px solid #e5e5e5\">Prioridad</td><td style=\"padding:8px 12px;border-top:1px solid #e5e5e5\">{{ $json.priority }}</td></tr>\n    <tr><td style=\"padding:8px 12px;border-top:1px solid #e5e5e5\">Horas estimadas</td><td style=\"padding:8px 12px;border-top:1px solid #e5e5e5\">{{ $json.estimate_hours }}h</td></tr>\n    <tr><td style=\"padding:8px 12px;border-top:1px solid #e5e5e5\">Skill requerido</td><td style=\"padding:8px 12px;border-top:1px solid #e5e5e5\">{{ $json.skill_label || $json.required_skill }}</td></tr>\n    <tr><td style=\"padding:8px 12px;border-top:1px solid #e5e5e5\">Fecha límite</td><td style=\"padding:8px 12px;border-top:1px solid #e5e5e5\">{{ $json.deadline || 'Por definir' }}</td></tr>\n    <tr><td style=\"padding:8px 12px;border-top:1px solid #e5e5e5\">% Riesgo</td><td style=\"padding:8px 12px;border-top:1px solid #e5e5e5;color:{{ $json.risk_pct > 60 ? '#dc2626' : $json.risk_pct > 40 ? '#d97706' : '#16a34a' }}\">{{ $json.risk_pct }}%</td></tr>\n  </table>\n  {{ $json.reasoning ? '<p style=\"margin-top:16px;background:#fef9c3;padding:12px;border-radius:6px\"><strong>Razonamiento de asignación:</strong> ' + $json.reasoning + '</p>' : '' }}\n  <p style=\"margin-top:24px;color:#6b7280;font-size:13px\">Meeting → Tickets PM · Cursor Buildathon El Salvador 2026</p>\n</div>",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0001-0001-0001-000000000004",
+      "name": "Email a Asignado",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [900, 300],
+      "credentials": { "smtp": { "id": "smtp-cred-id", "name": "SMTP" } }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/notifications",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "return=minimal" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"approval_id\": \"{{ $json.approval_id }}\",\n  \"ticket_id\": \"{{ $json.ticket_id }}\",\n  \"member_id\": \"{{ $json.assignee_id }}\",\n  \"channel\": \"email\",\n  \"template\": \"ticket_assigned\",\n  \"status\": \"sent\",\n  \"sent_at\": \"{{ $now.toISO() }}\",\n  \"metadata\": { \"to\": \"{{ $json.assignee_email }}\", \"risk_pct\": {{ $json.risk_pct }} }\n}",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0001-0001-0001-000000000005",
+      "name": "Log Notificacion Asignado",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "risk-check",
+              "leftValue": "={{ $json.risk_pct }}",
+              "rightValue": 60,
+              "operator": { "type": "number", "operation": "gt" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0001-0001-0001-000000000006",
+      "name": "Riesgo Alto?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1340, 300]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.SMTP_FROM }}",
+        "toEmail": "={{ $json.manager_email }}",
+        "subject": "=⚠️ Riesgo alto en ticket: {{ $json.title }} ({{ $json.risk_pct }}%)",
+        "emailFormat": "html",
+        "message": "=<div style=\"font-family:sans-serif;max-width:600px;margin:0 auto\">\n  <div style=\"background:#fef2f2;border-left:4px solid #dc2626;padding:16px;border-radius:0 8px 8px 0;margin-bottom:16px\">\n    <h2 style=\"color:#dc2626;margin:0 0 8px\">⚠️ Alerta de Riesgo Alto</h2>\n    <p style=\"margin:0;color:#111\">Ticket <strong>{{ $json.title }}</strong> asignado a <strong>{{ $json.assignee_name }}</strong> con {{ $json.risk_pct }}% de riesgo.</p>\n  </div>\n  <p><strong>Proyecto:</strong> {{ $json.project_name }}</p>\n  <p><strong>Plan aprobado:</strong> {{ $json.requirement_title }}</p>\n  <p><strong>Horas estimadas:</strong> {{ $json.estimate_hours }}h · <strong>Prioridad:</strong> {{ $json.priority }}</p>\n  <p style=\"background:#fef9c3;padding:12px;border-radius:6px\"><strong>Razonamiento del Assignment Agent:</strong><br>{{ $json.reasoning }}</p>\n  <p style=\"color:#6b7280;font-size:13px;margin-top:24px\">Revisá la carga de {{ $json.assignee_name }} en el dashboard del equipo.</p>\n</div>",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0001-0001-0001-000000000007",
+      "name": "Email Alerta Riesgo Manager",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1560, 200],
+      "credentials": { "smtp": { "id": "smtp-cred-id", "name": "SMTP" } }
+    },
+    {
+      "parameters": {},
+      "id": "a1b2c3d4-0001-0001-0001-000000000008",
+      "name": "Sin Riesgo Alto",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1560, 420]
+    },
+    {
+      "parameters": { "mode": "append", "options": {} },
+      "id": "a1b2c3d4-0001-0001-0001-000000000009",
+      "name": "Unir Ramas",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1780, 300]
+    },
+    {
+      "parameters": {
+        "aggregate": "aggregateAllItemData",
+        "destinationFieldName": "tickets",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0001-0001-0001-000000000010",
+      "name": "Agregar Todos los Tickets",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [2000, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Construye el HTML de la tabla resumen para el email al manager.\nconst tickets = $input.first().json.tickets;\nconst first = tickets[0] || {};\nconst requirementTitle = first.requirement_title || 'Plan aprobado';\nconst projectName = first.project_name || '';\nconst approvedBy = first.approved_by || 'Manager';\nconst managerEmail = first.manager_email || '';\n\nconst rows = tickets.map(t => {\n  const riskColor = t.risk_pct > 60 ? '#dc2626' : t.risk_pct > 40 ? '#d97706' : '#16a34a';\n  return `<tr>\n    <td style=\"padding:8px 12px;border-top:1px solid #e5e5e5\">${t.title}</td>\n    <td style=\"padding:8px 12px;border-top:1px solid #e5e5e5\">${t.assignee_name || 'Sin asignar'}</td>\n    <td style=\"padding:8px 12px;border-top:1px solid #e5e5e5\">${t.priority}</td>\n    <td style=\"padding:8px 12px;border-top:1px solid #e5e5e5\">${t.estimate_hours}h</td>\n    <td style=\"padding:8px 12px;border-top:1px solid #e5e5e5;color:${riskColor};font-weight:600\">${t.risk_pct}%</td>\n    <td style=\"padding:8px 12px;border-top:1px solid #e5e5e5\">${t.deadline || '—'}</td>\n  </tr>`;\n}).join('');\n\nconst highRisk = tickets.filter(t => t.risk_pct > 60).length;\nconst totalHours = tickets.reduce((a, t) => a + (t.estimate_hours || 0), 0);\n\nreturn [{\n  json: {\n    manager_email: managerEmail,\n    requirement_title: requirementTitle,\n    project_name: projectName,\n    approved_by: approvedBy,\n    approval_id: first.approval_id,\n    total_tickets: tickets.length,\n    total_hours: totalHours,\n    high_risk_count: highRisk,\n    summary_html: `<div style=\"font-family:sans-serif;max-width:700px;margin:0 auto\">\n  <h2 style=\"color:#111\">Plan aprobado: ${requirementTitle}</h2>\n  <p>Proyecto: <strong>${projectName}</strong> · Aprobado por: <strong>${approvedBy}</strong></p>\n  <div style=\"display:flex;gap:24px;margin:16px 0\">\n    <div style=\"background:#f5f5f5;padding:12px 20px;border-radius:8px;text-align:center\">\n      <div style=\"font-size:28px;font-weight:700\">${tickets.length}</div>\n      <div style=\"color:#6b7280;font-size:13px\">tickets</div>\n    </div>\n    <div style=\"background:#f5f5f5;padding:12px 20px;border-radius:8px;text-align:center\">\n      <div style=\"font-size:28px;font-weight:700\">${totalHours}h</div>\n      <div style=\"color:#6b7280;font-size:13px\">horas estimadas</div>\n    </div>\n    ${highRisk > 0 ? `<div style=\"background:#fef2f2;padding:12px 20px;border-radius:8px;text-align:center\">\n      <div style=\"font-size:28px;font-weight:700;color:#dc2626\">${highRisk}</div>\n      <div style=\"color:#dc2626;font-size:13px\">riesgo alto</div>\n    </div>` : ''}\n  </div>\n  <table style=\"border-collapse:collapse;width:100%\">\n    <tr style=\"background:#111;color:#fff\">\n      <th style=\"padding:8px 12px;text-align:left\">Ticket</th>\n      <th style=\"padding:8px 12px;text-align:left\">Asignado a</th>\n      <th style=\"padding:8px 12px;text-align:left\">Prioridad</th>\n      <th style=\"padding:8px 12px;text-align:left\">Horas</th>\n      <th style=\"padding:8px 12px;text-align:left\">Riesgo</th>\n      <th style=\"padding:8px 12px;text-align:left\">Deadline</th>\n    </tr>\n    ${rows}\n  </table>\n  <p style=\"margin-top:24px;color:#6b7280;font-size:13px\">Meeting → Tickets PM · Cursor Buildathon El Salvador 2026</p>\n</div>`\n  }\n}];"
+      },
+      "id": "a1b2c3d4-0001-0001-0001-000000000011",
+      "name": "Construir Resumen HTML",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2220, 300]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.SMTP_FROM }}",
+        "toEmail": "={{ $json.manager_email }}",
+        "subject": "=📋 Plan aprobado: {{ $json.requirement_title }} ({{ $json.total_tickets }} tickets · {{ $json.total_hours }}h)",
+        "emailFormat": "html",
+        "message": "={{ $json.summary_html }}",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0001-0001-0001-000000000012",
+      "name": "Email Resumen al Jefe",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [2440, 300],
+      "credentials": { "smtp": { "id": "smtp-cred-id", "name": "SMTP" } }
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/approvals?id=eq.{{ $json.approval_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "return=minimal" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{ \"n8n_notified\": true, \"n8n_ok\": true }",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0001-0001-0001-000000000013",
+      "name": "Confirmar Aprobacion en Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2660, 300]
+    }
+  ],
+  "connections": {
+    "Plan Aprobado Webhook": {
+      "main": [
+        [{ "node": "Expandir Tickets", "type": "main", "index": 0 }]
+      ]
+    },
+    "Expandir Tickets": {
+      "main": [
+        [{ "node": "Filtrar Sin Email", "type": "main", "index": 0 }]
+      ]
+    },
+    "Filtrar Sin Email": {
+      "main": [
+        [{ "node": "Email a Asignado", "type": "main", "index": 0 }]
+      ]
+    },
+    "Email a Asignado": {
+      "main": [
+        [{ "node": "Log Notificacion Asignado", "type": "main", "index": 0 }]
+      ]
+    },
+    "Log Notificacion Asignado": {
+      "main": [
+        [{ "node": "Riesgo Alto?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Riesgo Alto?": {
+      "main": [
+        [{ "node": "Email Alerta Riesgo Manager", "type": "main", "index": 0 }],
+        [{ "node": "Sin Riesgo Alto", "type": "main", "index": 0 }]
+      ]
+    },
+    "Email Alerta Riesgo Manager": {
+      "main": [
+        [{ "node": "Unir Ramas", "type": "main", "index": 0 }]
+      ]
+    },
+    "Sin Riesgo Alto": {
+      "main": [
+        [{ "node": "Unir Ramas", "type": "main", "index": 1 }]
+      ]
+    },
+    "Unir Ramas": {
+      "main": [
+        [{ "node": "Agregar Todos los Tickets", "type": "main", "index": 0 }]
+      ]
+    },
+    "Agregar Todos los Tickets": {
+      "main": [
+        [{ "node": "Construir Resumen HTML", "type": "main", "index": 0 }]
+      ]
+    },
+    "Construir Resumen HTML": {
+      "main": [
+        [{ "node": "Email Resumen al Jefe", "type": "main", "index": 0 }]
+      ]
+    },
+    "Email Resumen al Jefe": {
+      "main": [
+        [{ "node": "Confirmar Aprobacion en Supabase", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "kb-buildathon-2026"
+  },
+  "id": "wf-aprobacion-2026",
+  "tags": [{ "id": "tag-pm", "name": "meeting-to-tickets" }]
+}

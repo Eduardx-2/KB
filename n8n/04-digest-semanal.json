@@ -1,0 +1,204 @@
+{
+  "name": "WF4 — Digest Semanal del Manager",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "cronExpression", "expression": "0 7 * * 1" }]
+        }
+      },
+      "id": "a1b2c3d4-0004-0004-0004-000000000001",
+      "name": "Cron Lunes 7am",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/tickets",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_SERVICE_KEY }}" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "select",
+              "value": "id,title,status,priority,estimate_hours,risk_pct,deadline,assignee_id,project_id,members(id,name,email,current_load,is_manager),projects(id,name,status),requirements(id,title,status)"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0004-0004-0004-000000000002",
+      "name": "Obtener Todos los Tickets",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [460, 200]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/members",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_SERVICE_KEY }}" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "is_manager", "value": "eq.true" },
+            { "name": "select", "value": "id,name,email,current_load" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0004-0004-0004-000000000003",
+      "name": "Obtener Managers",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [460, 420]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineAll",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0004-0004-0004-000000000004",
+      "name": "Combinar Tickets y Managers",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [700, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Construye el digest semanal completo para el manager.\n// Agrupa métricas relevantes: progreso, riesgo, carga, vencidos.\nconst allItems = $input.all();\nif (allItems.length < 2) return [];\n\nconst tickets = allItems[0].json;\nconst managers = allItems[1].json;\n\nif (!Array.isArray(managers) || managers.length === 0) return [];\nif (!Array.isArray(tickets) || tickets.length === 0) return [];\n\n// Calcular fechas de la semana\nconst today = new Date();\nconst lastMonday = new Date(today);\nlastMonday.setDate(today.getDate() - 7);\n\n// Métricas globales\nconst total = tickets.length;\nconst done = tickets.filter(t => t.status === 'done').length;\nconst inProgress = tickets.filter(t => t.status === 'in_progress').length;\nconst todo = tickets.filter(t => t.status === 'todo').length;\nconst backlog = tickets.filter(t => t.status === 'backlog').length;\nconst highRisk = tickets.filter(t => t.risk_pct > 60);\nconst overdue = tickets.filter(t => t.deadline && new Date(t.deadline) < today && t.status !== 'done');\nconst completionPct = total > 0 ? Math.round((done / total) * 100) : 0;\nconst totalHours = tickets.reduce((a, t) => a + (t.estimate_hours || 0), 0);\nconst doneHours = tickets.filter(t => t.status === 'done').reduce((a, t) => a + (t.estimate_hours || 0), 0);\n\n// Por proyecto\nconst byProject = new Map();\nfor (const t of tickets) {\n  const pName = t.projects?.name || 'Sin proyecto';\n  const pId = t.project_id || 'unknown';\n  if (!byProject.has(pId)) byProject.set(pId, { name: pName, total: 0, done: 0, inProgress: 0, highRisk: 0 });\n  const p = byProject.get(pId);\n  p.total++;\n  if (t.status === 'done') p.done++;\n  if (t.status === 'in_progress') p.inProgress++;\n  if (t.risk_pct > 60) p.highRisk++;\n}\n\n// Por developer (solo los con tickets)\nconst byMember = new Map();\nfor (const t of tickets) {\n  if (!t.assignee_id) continue;\n  const mName = t.members?.name || 'Sin nombre';\n  const mLoad = t.members?.current_load ?? 0;\n  if (!byMember.has(t.assignee_id)) byMember.set(t.assignee_id, { name: mName, load: mLoad, total: 0, done: 0, inProgress: 0, overdue: 0 });\n  const m = byMember.get(t.assignee_id);\n  m.total++;\n  if (t.status === 'done') m.done++;\n  if (t.status === 'in_progress') m.inProgress++;\n  if (t.deadline && new Date(t.deadline) < today && t.status !== 'done') m.overdue++;\n}\n\n// Generar filas HTML\nconst projectRows = [...byProject.values()].map(p => {\n  const pct = p.total > 0 ? Math.round((p.done / p.total) * 100) : 0;\n  return `<tr>\n    <td style=\"padding:8px 12px;border-top:1px solid #e5e5e5\">${p.name}</td>\n    <td style=\"padding:8px 12px;border-top:1px solid #e5e5e5;text-align:center\">${p.done}/${p.total}</td>\n    <td style=\"padding:8px 12px;border-top:1px solid #e5e5e5;text-align:center\">${p.inProgress}</td>\n    <td style=\"padding:8px 12px;border-top:1px solid #e5e5e5;text-align:center;font-weight:600\">${pct}%</td>\n    <td style=\"padding:8px 12px;border-top:1px solid #e5e5e5;text-align:center;color:${p.highRisk > 0 ? '#dc2626' : '#16a34a'}\">${p.highRisk}</td>\n  </tr>`;\n}).join('');\n\nconst memberRows = [...byMember.values()].map(m => {\n  const loadColor = m.load > 80 ? '#dc2626' : m.load > 60 ? '#d97706' : '#16a34a';\n  return `<tr>\n    <td style=\"padding:8px 12px;border-top:1px solid #e5e5e5\">${m.name}</td>\n    <td style=\"padding:8px 12px;border-top:1px solid #e5e5e5;text-align:center;color:${loadColor};font-weight:600\">${m.load}%</td>\n    <td style=\"padding:8px 12px;border-top:1px solid #e5e5e5;text-align:center\">${m.inProgress}</td>\n    <td style=\"padding:8px 12px;border-top:1px solid #e5e5e5;text-align:center\">${m.done}/${m.total}</td>\n    <td style=\"padding:8px 12px;border-top:1px solid #e5e5e5;text-align:center;color:${m.overdue > 0 ? '#dc2626' : '#16a34a'}\">${m.overdue}</td>\n  </tr>`;\n}).join('');\n\nconst highRiskRows = highRisk.map(t => {\n  return `<tr>\n    <td style=\"padding:8px 12px;border-top:1px solid #e5e5e5\">${t.title}</td>\n    <td style=\"padding:8px 12px;border-top:1px solid #e5e5e5\">${t.members?.name || '—'}</td>\n    <td style=\"padding:8px 12px;border-top:1px solid #e5e5e5\">${t.projects?.name || '—'}</td>\n    <td style=\"padding:8px 12px;border-top:1px solid #e5e5e5;color:#dc2626;font-weight:700\">${t.risk_pct}%</td>\n  </tr>`;\n}).join('');\n\nconst weekLabel = `semana del ${lastMonday.toLocaleDateString('es-SV', { day: '2-digit', month: 'short' })} al ${today.toLocaleDateString('es-SV', { day: '2-digit', month: 'short' })}`;\n\nconst digestHtml = `<div style=\"font-family:sans-serif;max-width:700px;margin:0 auto\">\n  <h1 style=\"color:#111;border-bottom:3px solid #111;padding-bottom:12px\">📊 Digest semanal del equipo</h1>\n  <p style=\"color:#6b7280\">${weekLabel}</p>\n\n  <div style=\"display:flex;gap:16px;margin:20px 0;flex-wrap:wrap\">\n    <div style=\"flex:1;min-width:120px;background:#f5f5f5;padding:16px;border-radius:8px;text-align:center\">\n      <div style=\"font-size:32px;font-weight:700;color:#111\">${completionPct}%</div>\n      <div style=\"color:#6b7280;font-size:13px\">completado</div>\n    </div>\n    <div style=\"flex:1;min-width:120px;background:#f0fdf4;padding:16px;border-radius:8px;text-align:center\">\n      <div style=\"font-size:32px;font-weight:700;color:#16a34a\">${done}</div>\n      <div style=\"color:#6b7280;font-size:13px\">tickets done</div>\n    </div>\n    <div style=\"flex:1;min-width:120px;background:#eff6ff;padding:16px;border-radius:8px;text-align:center\">\n      <div style=\"font-size:32px;font-weight:700;color:#2563eb\">${inProgress}</div>\n      <div style=\"color:#6b7280;font-size:13px\">en progreso</div>\n    </div>\n    ${highRisk.length > 0 ? `<div style=\"flex:1;min-width:120px;background:#fef2f2;padding:16px;border-radius:8px;text-align:center\">\n      <div style=\"font-size:32px;font-weight:700;color:#dc2626\">${highRisk.length}</div>\n      <div style=\"color:#6b7280;font-size:13px\">riesgo alto</div>\n    </div>` : ''}\n    ${overdue.length > 0 ? `<div style=\"flex:1;min-width:120px;background:#fff7ed;padding:16px;border-radius:8px;text-align:center\">\n      <div style=\"font-size:32px;font-weight:700;color:#d97706\">${overdue.length}</div>\n      <div style=\"color:#6b7280;font-size:13px\">vencidos</div>\n    </div>` : ''}\n  </div>\n\n  <h2 style=\"color:#111;margin-top:28px\">Por proyecto</h2>\n  <table style=\"border-collapse:collapse;width:100%\">\n    <tr style=\"background:#111;color:#fff\">\n      <th style=\"padding:8px 12px;text-align:left\">Proyecto</th>\n      <th style=\"padding:8px 12px;text-align:center\">Avance</th>\n      <th style=\"padding:8px 12px;text-align:center\">En curso</th>\n      <th style=\"padding:8px 12px;text-align:center\">%</th>\n      <th style=\"padding:8px 12px;text-align:center\">Riesgo alto</th>\n    </tr>\n    ${projectRows}\n  </table>\n\n  <h2 style=\"color:#111;margin-top:28px\">Carga del equipo</h2>\n  <table style=\"border-collapse:collapse;width:100%\">\n    <tr style=\"background:#111;color:#fff\">\n      <th style=\"padding:8px 12px;text-align:left\">Developer</th>\n      <th style=\"padding:8px 12px;text-align:center\">Carga</th>\n      <th style=\"padding:8px 12px;text-align:center\">En curso</th>\n      <th style=\"padding:8px 12px;text-align:center\">Completados</th>\n      <th style=\"padding:8px 12px;text-align:center\">Vencidos</th>\n    </tr>\n    ${memberRows}\n  </table>\n\n  ${highRisk.length > 0 ? `<h2 style=\"color:#dc2626;margin-top:28px\">⚠️ Tickets en riesgo alto (>${60}%)</h2>\n  <table style=\"border-collapse:collapse;width:100%\">\n    <tr style=\"background:#dc2626;color:#fff\">\n      <th style=\"padding:8px 12px;text-align:left\">Ticket</th>\n      <th style=\"padding:8px 12px;text-align:left\">Asignado a</th>\n      <th style=\"padding:8px 12px;text-align:left\">Proyecto</th>\n      <th style=\"padding:8px 12px;text-align:center\">Riesgo</th>\n    </tr>\n    ${highRiskRows}\n  </table>` : '<p style=\"color:#16a34a;margin-top:20px\">✅ Sin tickets en riesgo alto esta semana.</p>'}\n\n  <p style=\"color:#6b7280;font-size:13px;margin-top:32px;border-top:1px solid #e5e5e5;padding-top:16px\">\n    Horas comprometidas: <strong>${totalHours}h total</strong> · <strong>${doneHours}h entregadas</strong> · <strong>${totalHours - doneHours}h pendientes</strong><br>\n    Meeting → Tickets PM · Cursor Buildathon El Salvador 2026\n  </p>\n</div>`;\n\nreturn managers.map(manager => ({\n  json: {\n    manager_id: manager.id,\n    manager_name: manager.name,\n    manager_email: manager.email,\n    week_label: weekLabel,\n    total_tickets: total,\n    done_tickets: done,\n    high_risk_count: highRisk.length,\n    overdue_count: overdue.length,\n    digest_html: digestHtml\n  }\n}));"
+      },
+      "id": "a1b2c3d4-0004-0004-0004-000000000005",
+      "name": "Construir Digest Semanal",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [920, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "has-email",
+              "leftValue": "={{ $json.manager_email }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "notEmpty" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0004-0004-0004-000000000006",
+      "name": "Manager Tiene Email?",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [1140, 300]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.SMTP_FROM }}",
+        "toEmail": "={{ $json.manager_email }}",
+        "subject": "=📊 Digest semanal del equipo — {{ $json.week_label }} · {{ $json.done_tickets }} tickets completados",
+        "emailFormat": "html",
+        "message": "={{ $json.digest_html }}",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0004-0004-0004-000000000007",
+      "name": "Email Digest al Manager",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1360, 300],
+      "credentials": { "smtp": { "id": "smtp-cred-id", "name": "SMTP" } }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/notifications",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "return=minimal" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"member_id\": \"{{ $json.manager_id }}\",\n  \"channel\": \"email\",\n  \"template\": \"weekly_digest\",\n  \"status\": \"sent\",\n  \"sent_at\": \"{{ $now.toISO() }}\",\n  \"metadata\": { \"to\": \"{{ $json.manager_email }}\", \"total_tickets\": {{ $json.total_tickets }}, \"done\": {{ $json.done_tickets }}, \"high_risk\": {{ $json.high_risk_count }}, \"overdue\": {{ $json.overdue_count }}, \"week\": \"{{ $json.week_label }}\" }\n}",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0004-0004-0004-000000000008",
+      "name": "Log Digest en Notifications",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1580, 300]
+    }
+  ],
+  "connections": {
+    "Cron Lunes 7am": {
+      "main": [
+        [
+          { "node": "Obtener Todos los Tickets", "type": "main", "index": 0 },
+          { "node": "Obtener Managers", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Obtener Todos los Tickets": {
+      "main": [
+        [{ "node": "Combinar Tickets y Managers", "type": "main", "index": 0 }]
+      ]
+    },
+    "Obtener Managers": {
+      "main": [
+        [{ "node": "Combinar Tickets y Managers", "type": "main", "index": 1 }]
+      ]
+    },
+    "Combinar Tickets y Managers": {
+      "main": [
+        [{ "node": "Construir Digest Semanal", "type": "main", "index": 0 }]
+      ]
+    },
+    "Construir Digest Semanal": {
+      "main": [
+        [{ "node": "Manager Tiene Email?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Manager Tiene Email?": {
+      "main": [
+        [{ "node": "Email Digest al Manager", "type": "main", "index": 0 }]
+      ]
+    },
+    "Email Digest al Manager": {
+      "main": [
+        [{ "node": "Log Digest en Notifications", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "pinData": {},
+  "meta": { "instanceId": "kb-buildathon-2026" },
+  "id": "wf-digest-semanal-2026",
+  "tags": [{ "id": "tag-pm", "name": "meeting-to-tickets" }]
+}
