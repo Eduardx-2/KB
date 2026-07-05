@@ -25,7 +25,14 @@ export function MemberCard({
         <div className="flex items-center gap-3">
           <Avatar name={member.name} size="lg" />
           <div className="min-w-0 flex-1">
-            <p className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">{member.name}</p>
+            <div className="flex items-center gap-2">
+              <p className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">{member.name}</p>
+              {member.is_manager && (
+                <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-violet-700 dark:bg-violet-950 dark:text-violet-300">
+                  Manager
+                </span>
+              )}
+            </div>
             <p className="text-xs text-neutral-500 dark:text-neutral-400">{member.role}</p>
           </div>
           <ChevronRight className="size-4 shrink-0 text-neutral-300 transition group-hover:translate-x-0.5 group-hover:text-neutral-500 dark:text-neutral-700" />

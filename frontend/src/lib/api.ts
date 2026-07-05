@@ -2,7 +2,7 @@ import { useAppStore } from "./store";
 import { simulateAssignmentAgent, simulateMeetingAgent } from "./mock-engine";
 import { reportClientError, type ErrorSeverity } from "./error-reporting";
 import { sleep } from "./utils";
-import type { AssignmentAgentOutput, ErrorLog, HealthState, MeetingAgentOutput, RunMode } from "./types";
+import type { AssignmentAgentOutput, ErrorLog, HealthState, Member, MeetingAgentOutput, RunMode } from "./types";
 
 /**
  * Capa de acceso a datos. Sigue la regla del CONTRATO: el frontend nunca
@@ -287,6 +287,24 @@ export async function approveRequirement(
     ok: true,
   });
   return { n8n_notified: true, mode: "mock" };
+}
+
+/**
+ * Trae los miembros reales del equipo desde el backend (Supabase).
+ * Devuelve `null` si no hay backend real o si la llamada falla, para que
+ * el caller conserve el seed local (mock) y la UI nunca quede vacía.
+ */
+export async function fetchMembers(): Promise<Member[] | null> {
+  if (!HAS_LIVE_BACKEND) return null;
+  try {
+    const res = await fetchWithTimeout(`${API_BASE}/api/members`, {}, 6000);
+    assertOk(res);
+    const data = (await res.json()) as Member[];
+    return Array.isArray(data) && data.length > 0 ? data : null;
+  } catch (err) {
+    reportApiFailure("GET", "/api/members", err);
+    return null;
+  }
 }
 
 /** Lee los últimos errores registrados (backend + frontend). Vacío si no hay backend real. */

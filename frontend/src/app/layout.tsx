@@ -43,11 +43,9 @@ export default function RootLayout({
         />
       </head>
       <body className="min-h-full bg-[var(--background)] text-[var(--foreground)] antialiased">
-        <ErrorReportingInit />
-        <AppShell>{children}</AppShell>
-        <Toaster position="top-right" richColors closeButton theme="light" />
         <ThemeProvider>
           <StoreHydrator />
+          <ErrorReportingInit />
           <AppShell>{children}</AppShell>
           <Toaster position="top-right" richColors closeButton />
         </ThemeProvider>

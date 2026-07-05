@@ -18,6 +18,7 @@ export interface Member {
   skills: Skill[];
   current_load: number; // 0-100
   team_id: string;
+  is_manager?: boolean; // presente cuando los miembros vienen del backend real
 }
 
 export interface Requirement {

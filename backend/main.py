@@ -381,7 +381,23 @@ def approve(requirement_id: str):
     return ApproveResponse(status="approved", requirement_id=requirement_id, n8n_notified=notified)
 
 
-# ---------- 6. Health ----------
+# ---------- 6. Miembros del equipo ----------
+
+@app.get("/api/members")
+def list_members():
+    """Lista los miembros del equipo (con sus skills) para la vista de Equipo del frontend."""
+    rows = (
+        services.get_supabase()
+        .table("members")
+        .select("id, team_id, name, role, current_load, is_manager")
+        .order("is_manager")
+        .order("name")
+        .execute()
+    ).data or []
+    return _hydrate_members_with_skills(rows)
+
+
+# ---------- 7. Health ----------
 
 @app.get("/api/health", response_model=HealthResponse)
 def health():
@@ -394,7 +410,7 @@ def health_db():
     return {"status": "ok", "supabase": True, "rows_checked": len(res.data or [])}
 
 
-# ---------- 7. Error tracking ----------
+# ---------- 8. Error tracking ----------
 
 @app.post("/api/client-errors", status_code=201)
 def report_client_error(body: ClientErrorReport, request: Request):

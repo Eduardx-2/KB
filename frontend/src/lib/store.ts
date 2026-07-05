@@ -21,6 +21,7 @@ interface AppState {
   hydrated: boolean;
 
   setHydrated: () => void;
+  setMembers: (members: Member[]) => void;
   createRequirement: (title: string, transcript: string, id?: string) => string;
   setTranscript: (requirementId: string, transcript: string) => void;
   renameRequirement: (requirementId: string, title: string) => void;
@@ -54,6 +55,8 @@ export const useAppStore = create<AppState>()(
       hydrated: false,
 
       setHydrated: () => set({ hydrated: true }),
+
+      setMembers: (members) => set({ members }),
 
       createRequirement: (title, transcript, id) => {
         const rid = id ?? uid("req");
