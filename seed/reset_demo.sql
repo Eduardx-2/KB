@@ -15,6 +15,7 @@ delete from requirements;
 delete from meeting_project_mentions;
 delete from meetings;
 delete from agent_runs;
+delete from error_logs;
 
 -- Optional: reset member load to seed values
 update members set current_load = 40 where name = 'Ana';

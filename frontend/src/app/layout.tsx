@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { Toaster } from "sonner";
 import { AppShell } from "@/components/layout/app-shell";
+import { ErrorReportingInit } from "@/components/system/error-reporting-init";
 import { StoreHydrator } from "@/components/layout/store-hydrator";
 import { ThemeProvider } from "@/components/layout/theme-provider";
 import "./globals.css";
@@ -42,6 +43,9 @@ export default function RootLayout({
         />
       </head>
       <body className="min-h-full bg-[var(--background)] text-[var(--foreground)] antialiased">
+        <ErrorReportingInit />
+        <AppShell>{children}</AppShell>
+        <Toaster position="top-right" richColors closeButton theme="light" />
         <ThemeProvider>
           <StoreHydrator />
           <AppShell>{children}</AppShell>

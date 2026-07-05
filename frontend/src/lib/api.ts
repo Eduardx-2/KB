@@ -1,7 +1,8 @@
 import { useAppStore } from "./store";
 import { simulateAssignmentAgent, simulateMeetingAgent } from "./mock-engine";
+import { reportClientError, type ErrorSeverity } from "./error-reporting";
 import { sleep } from "./utils";
-import type { AssignmentAgentOutput, HealthState, MeetingAgentOutput, RunMode } from "./types";
+import type { AssignmentAgentOutput, ErrorLog, HealthState, MeetingAgentOutput, RunMode } from "./types";
 
 /**
  * Capa de acceso a datos. Sigue la regla del CONTRATO: el frontend nunca
@@ -26,6 +27,34 @@ async function fetchWithTimeout(input: string, init: RequestInit = {}, timeoutMs
   }
 }
 
+/** Error enriquecido con el status HTTP y el request_id para correlacionar con error_logs. */
+type BackendError = Error & { status?: number; requestId?: string };
+
+/** Lanza si la respuesta no fue ok, adjuntando status + X-Request-ID del backend. */
+function assertOk(res: Response): void {
+  if (res.ok) return;
+  const err = new Error(`HTTP ${res.status}`) as BackendError;
+  err.status = res.status;
+  err.requestId = res.headers.get("X-Request-ID") ?? undefined;
+  throw err;
+}
+
+/** Reporta al backend un fallo de una llamada (una sola vez por intento). */
+function reportApiFailure(method: string, path: string, err: unknown): void {
+  const e = err as BackendError;
+  const status = e?.status;
+  const severity: ErrorSeverity = status && status < 500 ? "warning" : "error";
+  void reportClientError({
+    message: e?.message || `Fallo en ${method} ${path}`,
+    error_type: e?.name || "FetchError",
+    severity,
+    http_status: status,
+    http_method: method,
+    path,
+    request_id: e?.requestId,
+  });
+}
+
 export async function checkHealth(): Promise<HealthState> {
   const checked_at = new Date().toISOString();
   if (!HAS_LIVE_BACKEND) {
@@ -33,11 +62,41 @@ export async function checkHealth(): Promise<HealthState> {
   }
   try {
     const res = await fetchWithTimeout(`${API_BASE}/api/health`, {}, 3500);
-    if (!res.ok) throw new Error(String(res.status));
+    assertOk(res);
     const data = await res.json();
     return { status: data.status === "ok" ? "ok" : "error", version: data.version, mode: "live", checked_at };
-  } catch {
+  } catch (err) {
+    reportApiFailure("GET", "/api/health", err);
     return { status: "error", mode: "live", checked_at };
+  }
+}
+
+/**
+ * Crea el requirement en el backend (Supabase) y devuelve su id REAL (uuid).
+ * Es el paso que alinea el frontend con el backend: el resto del pipeline
+ * (meeting/assignment/approve) necesita un requirement_id que exista en la DB.
+ * Si no hay backend real o falla, devuelve id null y el caller usa un id local.
+ */
+export async function createRequirement(
+  title: string
+): Promise<{ id: string | null; mode: RunMode }> {
+  if (!HAS_LIVE_BACKEND) return { id: null, mode: "mock" };
+  try {
+    const res = await fetchWithTimeout(
+      `${API_BASE}/api/requirements`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+      },
+      8000
+    );
+    assertOk(res);
+    const data = await res.json();
+    return { id: (data.id as string) ?? null, mode: "live" };
+  } catch (err) {
+    reportApiFailure("POST", "/api/requirements", err);
+    return { id: null, mode: "mock" };
   }
 }
 
@@ -48,7 +107,7 @@ export async function transcribeAudio(file: Blob): Promise<{ text: string; mode:
       const form = new FormData();
       form.append("file", file, "grabacion.webm");
       const res = await fetchWithTimeout(`${API_BASE}/api/transcribe`, { method: "POST", body: form }, 20000);
-      if (!res.ok) throw new Error(String(res.status));
+      assertOk(res);
       const data = await res.json();
       useAppStore.getState().pushAgentLog({
         agent: "transcribe",
@@ -57,7 +116,8 @@ export async function transcribeAudio(file: Blob): Promise<{ text: string; mode:
         ok: true,
       });
       return { text: data.text, mode: "live" };
-    } catch {
+    } catch (err) {
+      reportApiFailure("POST", "/api/transcribe", err);
       // sigue a la simulación de abajo
     }
   }
@@ -93,7 +153,7 @@ export async function runMeetingAgent(
         },
         15000
       );
-      if (!res.ok) throw new Error(String(res.status));
+      assertOk(res);
       const output: MeetingAgentOutput = await res.json();
       useAppStore.getState().pushAgentLog({
         agent: "meeting",
@@ -102,7 +162,8 @@ export async function runMeetingAgent(
         ok: true,
       });
       return { output, mode: "live" };
-    } catch {
+    } catch (err) {
+      reportApiFailure("POST", "/api/agents/meeting", err);
       // sigue a la simulación
     }
   }
@@ -133,7 +194,7 @@ export async function runAssignmentAgent(
         },
         15000
       );
-      if (!res.ok) throw new Error(String(res.status));
+      assertOk(res);
       const output: AssignmentAgentOutput = await res.json();
       useAppStore.getState().pushAgentLog({
         agent: "assignment",
@@ -142,7 +203,8 @@ export async function runAssignmentAgent(
         ok: true,
       });
       return { output, mode: "live" };
-    } catch {
+    } catch (err) {
+      reportApiFailure("POST", "/api/agents/assignment", err);
       // sigue a la simulación
     }
   }
@@ -184,9 +246,10 @@ export async function patchTicket(
         },
         8000
       );
-      if (!res.ok) throw new Error(String(res.status));
+      assertOk(res);
       return { mode: "live" };
-    } catch {
+    } catch (err) {
+      reportApiFailure("PATCH", `/api/tickets/${ticketId}`, err);
       // sigue a la simulación
     }
   }
@@ -201,7 +264,7 @@ export async function approveRequirement(
   if (HAS_LIVE_BACKEND) {
     try {
       const res = await fetchWithTimeout(`${API_BASE}/api/approve/${requirementId}`, { method: "POST" }, 10000);
-      if (!res.ok) throw new Error(String(res.status));
+      assertOk(res);
       const data = await res.json();
       useAppStore.getState().pushAgentLog({
         agent: "approve",
@@ -210,7 +273,8 @@ export async function approveRequirement(
         ok: true,
       });
       return { n8n_notified: Boolean(data.n8n_notified), mode: "live" };
-    } catch {
+    } catch (err) {
+      reportApiFailure("POST", `/api/approve/${requirementId}`, err);
       // sigue a la simulación
     }
   }
@@ -223,4 +287,16 @@ export async function approveRequirement(
     ok: true,
   });
   return { n8n_notified: true, mode: "mock" };
+}
+
+/** Lee los últimos errores registrados (backend + frontend). Vacío si no hay backend real. */
+export async function fetchErrorLogs(limit = 50): Promise<ErrorLog[]> {
+  if (!HAS_LIVE_BACKEND) return [];
+  try {
+    const res = await fetchWithTimeout(`${API_BASE}/api/errors?limit=${limit}`, {}, 6000);
+    assertOk(res);
+    return (await res.json()) as ErrorLog[];
+  } catch {
+    return [];
+  }
 }

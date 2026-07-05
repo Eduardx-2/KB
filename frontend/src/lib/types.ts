@@ -79,6 +79,22 @@ export interface AssignmentAgentOutput {
   recommendations: AssignmentRecommendation[];
 }
 
+export interface ErrorLog {
+  id: string;
+  source: "backend" | "frontend" | "worker";
+  severity: "info" | "warning" | "error" | "critical";
+  request_id: string | null;
+  http_status: number | null;
+  http_method: string | null;
+  path: string | null;
+  error_type: string | null;
+  message: string;
+  stack: string | null;
+  context: Record<string, unknown> | null;
+  user_agent: string | null;
+  created_at: string;
+}
+
 export type RunMode = "mock" | "live";
 
 export interface HealthState {

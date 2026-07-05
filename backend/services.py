@@ -82,6 +82,24 @@ def create_meeting(
     return res.data[0]["id"]
 
 
+def create_requirement(
+    *,
+    project_id: str,
+    title: str | None = None,
+    origin_project_id: str | None = None,
+) -> dict:
+    """Crea un requirement en estado 'draft' y devuelve la fila (id, project_id, ...)."""
+    res = get_supabase().table("requirements").insert(
+        {
+            "project_id": project_id,
+            "origin_project_id": origin_project_id,
+            "title": title,
+            "status": "draft",
+        }
+    ).execute()
+    return res.data[0]
+
+
 def save_meeting_transcript(
     *,
     requirement_id: str,
@@ -112,6 +130,141 @@ def save_meeting_transcript(
 
 def mark_meeting_processed(meeting_id: str) -> None:
     get_supabase().table("meetings").update({"status": "processed"}).eq("id", meeting_id).execute()
+
+
+# ---------- Trazabilidad del flujo (best-effort) ----------
+
+def record_assignment(ticket_id: str, assignee_id: str, risk_pct: int, reasoning: str | None) -> None:
+    """Historial de asignaciones. El trigger de la DB marca esta como la única current."""
+    try:
+        get_supabase().table("ticket_assignments").insert(
+            {
+                "ticket_id": ticket_id,
+                "assignee_id": assignee_id,
+                "risk_pct": risk_pct,
+                "reasoning": reasoning,
+                "source": "agent",
+                "is_current": True,
+            }
+        ).execute()
+    except Exception:  # noqa: BLE001 — la trazabilidad jamás tumba el endpoint
+        logger.exception("No se pudo escribir ticket_assignments (ignorado)")
+
+
+def log_ticket_status_event(
+    ticket_id: str, from_status: str | None, to_status: str, source: str = "api"
+) -> None:
+    """Bitácora de cambios de estado de un ticket."""
+    if from_status == to_status:
+        return
+    try:
+        get_supabase().table("ticket_status_events").insert(
+            {
+                "ticket_id": ticket_id,
+                "from_status": from_status,
+                "to_status": to_status,
+                "source": source,
+            }
+        ).execute()
+    except Exception:  # noqa: BLE001
+        logger.exception("No se pudo escribir ticket_status_events (ignorado)")
+
+
+def record_approval(
+    requirement_id: str, n8n_notified: bool, n8n_ok: bool | None, webhook_payload: dict | None
+) -> str | None:
+    """Registra la aprobación en approvals. Devuelve el id o None si falló."""
+    try:
+        res = get_supabase().table("approvals").insert(
+            {
+                "requirement_id": requirement_id,
+                "n8n_notified": n8n_notified,
+                "n8n_ok": n8n_ok,
+                "webhook_payload": webhook_payload,
+            }
+        ).execute()
+        return res.data[0]["id"]
+    except Exception:  # noqa: BLE001
+        logger.exception("No se pudo escribir approvals (ignorado)")
+        return None
+
+
+def create_notifications(approval_id: str | None, tickets: list[dict]) -> None:
+    """Crea una notificación por cada assignee de los tickets aprobados."""
+    rows = [
+        {
+            "approval_id": approval_id,
+            "ticket_id": t["id"],
+            "member_id": t["assignee_id"],
+            "channel": "email",
+            "template": "assignee_notice",
+            "status": "sent",
+        }
+        for t in tickets
+        if t.get("assignee_id")
+    ]
+    if not rows:
+        return
+    try:
+        get_supabase().table("notifications").insert(rows).execute()
+    except Exception:  # noqa: BLE001
+        logger.exception("No se pudo escribir notifications (ignorado)")
+
+
+# ---------- Error logging (backend + frontend) ----------
+
+def log_error(
+    *,
+    message: str,
+    source: str = "backend",
+    severity: str = "error",
+    error_type: str | None = None,
+    http_status: int | None = None,
+    http_method: str | None = None,
+    path: str | None = None,
+    stack: str | None = None,
+    context: dict | None = None,
+    request_id: str | None = None,
+    user_agent: str | None = None,
+) -> None:
+    """Registra un error en error_logs. Best-effort: nunca rompe el request.
+
+    Se usa tanto para errores del backend (desde los exception handlers) como
+    para errores del frontend reportados vía POST /api/client-errors.
+    """
+    try:
+        get_supabase().table("error_logs").insert(
+            {
+                "source": source,
+                "severity": severity,
+                "error_type": error_type,
+                "http_status": http_status,
+                "http_method": http_method,
+                "path": path,
+                # recortes defensivos para no guardar payloads gigantes
+                "message": (message or "")[:8000],
+                "stack": stack[:20000] if stack else None,
+                "context": context,
+                "request_id": request_id,
+                "user_agent": user_agent[:1000] if user_agent else None,
+            }
+        ).execute()
+    except Exception:  # noqa: BLE001 — el logging jamás tumba el endpoint
+        logger.exception("No se pudo escribir error_logs (ignorado)")
+
+
+def list_error_logs(limit: int = 50, source: str | None = None) -> list[dict]:
+    """Lee los últimos errores (para el panel de Sistema del frontend)."""
+    query = (
+        get_supabase()
+        .table("error_logs")
+        .select("*")
+        .order("created_at", desc=True)
+        .limit(max(1, min(limit, 200)))
+    )
+    if source:
+        query = query.eq("source", source)
+    return query.execute().data or []
 
 
 # ---------- Logging de agentes ----------

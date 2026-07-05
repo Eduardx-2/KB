@@ -46,6 +46,18 @@ class AssignmentAgentRequest(BaseModel):
     requirement_id: str
 
 
+class CreateRequirementRequest(BaseModel):
+    title: Optional[str] = None
+    project_id: Optional[str] = None
+
+
+class CreateRequirementResponse(BaseModel):
+    id: str
+    project_id: str
+    title: Optional[str] = None
+    status: str
+
+
 class TicketPatch(BaseModel):
     """Todos opcionales: solo se actualiza lo que venga."""
     status: Optional[Literal["backlog", "todo", "in_progress", "done"]] = None
@@ -62,3 +74,18 @@ class ApproveResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     version: str
+
+
+# ---------- Error tracking ----------
+
+class ClientErrorReport(BaseModel):
+    """Error del frontend reportado al backend (el front no escribe directo a la DB)."""
+    message: str
+    error_type: Optional[str] = None
+    severity: Optional[Literal["info", "warning", "error", "critical"]] = "error"
+    http_status: Optional[int] = None
+    http_method: Optional[str] = None
+    path: Optional[str] = None
+    stack: Optional[str] = None
+    context: Optional[dict] = None
+    request_id: Optional[str] = None

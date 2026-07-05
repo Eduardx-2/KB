@@ -116,7 +116,8 @@ The original contract used flat `team_id text` columns. v2 is richer but **backw
 |------|------|--------|
 | 1 | `seed/001_schema.sql` | 15 tables + 2 views + RLS |
 | 2 | `seed/002_seed_demo.sql` | 1 team, 5 skills, 6 members, 1 ERP project |
-| 3 | `seed/reset_demo.sql` | Clears meetings→notifications between demos |
+| 3 | `seed/004_error_logs.sql` | `error_logs` table + `recent_errors` view (error tracking) |
+| 4 | `seed/reset_demo.sql` | Clears meetings→notifications between demos |
 
 ### Verify after seed
 
