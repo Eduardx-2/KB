@@ -75,11 +75,11 @@ export default function DashboardPage() {
 
         <section>
           <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-neutral-900">Reuniones recientes</h2>
+            <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Reuniones recientes</h2>
             {sorted.length > 0 && (
               <Link
                 href="/reuniones/nueva"
-                className="flex items-center gap-1 text-xs font-medium text-neutral-500 hover:text-neutral-900"
+                className="flex items-center gap-1 text-xs font-medium text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100"
               >
                 Procesar otra <ArrowRight className="size-3.5" />
               </Link>

@@ -2,13 +2,15 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Sparkles, Plus } from "lucide-react";
+import { Sparkles, Plus, Sun, Moon } from "lucide-react";
 import { NAV_ITEMS } from "./nav-items";
 import { ConnectionBadge } from "./connection-badge";
+import { useTheme } from "./theme-provider";
 import { cn } from "@/lib/utils";
 
 export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
+  const { theme, toggle } = useTheme();
 
   return (
     <div className="flex h-full w-64 flex-col bg-neutral-950 text-neutral-100">
@@ -61,6 +63,26 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
 
       <div className="space-y-3 border-t border-white/10 p-4">
         <ConnectionBadge />
+
+        {/* Toggle modo oscuro / claro */}
+        <button
+          onClick={toggle}
+          className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-xs font-medium text-neutral-400 transition hover:bg-white/5 hover:text-neutral-200"
+          aria-label="Cambiar tema"
+        >
+          {theme === "dark" ? (
+            <>
+              <Sun className="size-3.5" />
+              Modo claro
+            </>
+          ) : (
+            <>
+              <Moon className="size-3.5" />
+              Modo oscuro
+            </>
+          )}
+        </button>
+
         <p className="px-1 text-[11px] leading-relaxed text-neutral-600">
           Cursor Buildathon El Salvador · Jul 2026
         </p>

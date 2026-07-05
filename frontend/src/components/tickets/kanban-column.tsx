@@ -23,8 +23,8 @@ export function KanbanColumn({
   return (
     <div className="flex w-72 shrink-0 flex-col sm:w-80">
       <div className="mb-3 flex items-center justify-between px-1">
-        <h3 className="text-sm font-semibold text-neutral-800">{label}</h3>
-        <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-xs font-medium text-neutral-500">
+        <h3 className="text-sm font-semibold text-neutral-800 dark:text-neutral-200">{label}</h3>
+        <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-xs font-medium text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
           {tickets.length}
         </span>
       </div>
@@ -32,7 +32,7 @@ export function KanbanColumn({
         ref={setNodeRef}
         className={cn(
           "flex min-h-[120px] flex-1 flex-col gap-2.5 rounded-xl border border-transparent p-1.5 transition-colors",
-          isOver && "border-neutral-300 bg-neutral-100/70"
+          isOver && "border-neutral-300 bg-neutral-100/70 dark:border-neutral-700 dark:bg-neutral-800/50"
         )}
       >
         {tickets.map((t) => (
@@ -44,7 +44,7 @@ export function KanbanColumn({
           />
         ))}
         {tickets.length === 0 && (
-          <div className="flex flex-1 items-center justify-center rounded-lg border border-dashed border-neutral-200 py-6 text-xs text-neutral-300">
+          <div className="flex flex-1 items-center justify-center rounded-lg border border-dashed border-neutral-200 py-6 text-xs text-neutral-300 dark:border-neutral-800 dark:text-neutral-700">
             Sin tickets
           </div>
         )}

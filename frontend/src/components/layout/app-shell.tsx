@@ -25,19 +25,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       )}
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-30 flex items-center gap-3 border-b border-neutral-200 bg-white/80 px-4 py-3 backdrop-blur md:hidden">
+        <header className="sticky top-0 z-30 flex items-center gap-3 border-b border-neutral-200 bg-white/90 px-4 py-3 backdrop-blur md:hidden dark:border-neutral-800 dark:bg-neutral-950/90">
           <button
             onClick={() => setMobileOpen(true)}
-            className="rounded-lg p-2 text-neutral-600 hover:bg-neutral-100"
+            className="rounded-lg p-2 text-neutral-600 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
             aria-label="Abrir menú"
           >
             <Menu className="size-5" />
           </button>
           <div className="flex items-center gap-2">
-            <div className="flex size-7 items-center justify-center rounded-lg bg-neutral-900 text-white">
+            <div className="flex size-7 items-center justify-center rounded-lg bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900">
               <Sparkles className="size-3.5" />
             </div>
-            <span className="text-sm font-semibold text-neutral-900">Meeting → Tickets</span>
+            <span className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Meeting → Tickets</span>
           </div>
         </header>
 

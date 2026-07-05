@@ -10,20 +10,20 @@ export function RequirementRow({ requirement, tickets }: { requirement: Requirem
   return (
     <Link
       href={`/reuniones/${requirement.id}`}
-      className="group flex items-center gap-4 rounded-xl border border-neutral-200 bg-white px-4 py-3.5 transition hover:border-neutral-300 hover:shadow-sm"
+      className="group flex items-center gap-4 rounded-xl border border-neutral-200 bg-white px-4 py-3.5 transition hover:border-neutral-300 hover:shadow-sm dark:border-neutral-800 dark:bg-neutral-900 dark:hover:border-neutral-700"
     >
-      <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-neutral-100 text-neutral-500">
+      <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
         <ListChecks className="size-4" />
       </div>
       <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium text-neutral-900">{requirement.title}</p>
-        <p className="mt-0.5 truncate text-xs text-neutral-500">
+        <p className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">{requirement.title}</p>
+        <p className="mt-0.5 truncate text-xs text-neutral-500 dark:text-neutral-400">
           {tickets.length} tickets · creado {formatRelativeTime(requirement.created_at)}
-          {highRisk > 0 && <span className="text-red-600"> · {highRisk} en riesgo alto</span>}
+          {highRisk > 0 && <span className="text-red-500"> · {highRisk} en riesgo alto</span>}
         </p>
       </div>
       <RequirementStatusBadge status={requirement.status} />
-      <ChevronRight className="size-4 shrink-0 text-neutral-300 transition group-hover:translate-x-0.5 group-hover:text-neutral-500" />
+      <ChevronRight className="size-4 shrink-0 text-neutral-300 transition group-hover:translate-x-0.5 group-hover:text-neutral-500 dark:text-neutral-700" />
     </Link>
   );
 }

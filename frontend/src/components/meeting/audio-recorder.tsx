@@ -111,7 +111,7 @@ export function AudioRecorder({
 
   if (error) {
     return (
-      <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-red-200 bg-red-50/60 px-6 py-10 text-center">
+      <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-red-200 bg-red-50/60 px-6 py-10 text-center dark:border-red-900 dark:bg-red-950/30">
         <CircleAlert className="size-6 text-red-500" />
         <p className="text-sm text-red-700">{error}</p>
         <Button size="sm" variant="outline" onClick={() => setError(null)}>
@@ -123,19 +123,19 @@ export function AudioRecorder({
 
   if (hasClip) {
     return (
-      <div className="flex items-center justify-between rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3.5">
+      <div className="flex items-center justify-between rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3.5 dark:border-neutral-700 dark:bg-neutral-800/50">
         <div className="flex items-center gap-3">
           <div className="flex size-9 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
             <Mic className="size-4" />
           </div>
           <div>
-            <p className="text-sm font-medium text-neutral-900">Audio grabado</p>
-            <p className="text-xs text-neutral-500">Duración {formatTime(seconds)}</p>
+            <p className="text-sm font-medium text-neutral-900 dark:text-neutral-100">Audio grabado</p>
+            <p className="text-xs text-neutral-500 dark:text-neutral-400">Duración {formatTime(seconds)}</p>
           </div>
         </div>
         <button
           onClick={clearClip}
-          className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-neutral-500 hover:bg-neutral-200/60 hover:text-neutral-800"
+          className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-neutral-500 hover:bg-neutral-200/60 hover:text-neutral-800 dark:hover:bg-neutral-700 dark:hover:text-neutral-200"
         >
           <Trash2 className="size-3.5" />
           Borrar
@@ -145,12 +145,12 @@ export function AudioRecorder({
   }
 
   return (
-    <div className="flex flex-col items-center gap-4 rounded-xl border border-neutral-200 bg-neutral-50 px-6 py-8">
+    <div className="flex flex-col items-center gap-4 rounded-xl border border-neutral-200 bg-neutral-50 px-6 py-8 dark:border-neutral-700 dark:bg-neutral-800/30">
       <div className="flex h-10 items-end gap-1">
         {levels.map((lvl, i) => (
           <span
             key={i}
-            className={cn("w-1 rounded-full transition-all", recording ? "bg-neutral-900" : "bg-neutral-300")}
+            className={cn("w-1 rounded-full transition-all", recording ? "bg-neutral-900 dark:bg-neutral-100" : "bg-neutral-300 dark:bg-neutral-600")}
             style={{ height: `${lvl}px` }}
           />
         ))}
@@ -158,7 +158,7 @@ export function AudioRecorder({
 
       {recording ? (
         <>
-          <p className="font-mono text-lg tabular-nums text-neutral-900">{formatTime(seconds)}</p>
+          <p className="font-mono text-lg tabular-nums text-neutral-900 dark:text-neutral-100">{formatTime(seconds)}</p>
           <Button variant="danger" onClick={stopRecording}>
             <Square className="size-4" />
             Detener grabación
@@ -166,7 +166,7 @@ export function AudioRecorder({
         </>
       ) : (
         <>
-          <p className="text-sm text-neutral-500">Grabá la reunión directo desde el navegador</p>
+          <p className="text-sm text-neutral-500 dark:text-neutral-400">Grabá la reunión directo desde el navegador</p>
           <Button onClick={startRecording}>
             <Mic className="size-4" />
             Empezar a grabar

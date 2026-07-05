@@ -1,0 +1,293 @@
+{
+  "name": "WF1 — Notificar Asignaciones Aprobadas",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "plan-aprobado",
+        "responseMode": "onReceived",
+        "responseData": "{\"received\":true,\"message\":\"Aprobacion recibida. Se notificaran las asignaciones ya generadas por el backend.\"}",
+        "options": {}
+      },
+      "id": "wf1-notify-001",
+      "name": "Webhook Backend Approval",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [200, 300],
+      "webhookId": "plan-aprobado-backend-assigned"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json;\nconst requirementId = body.requirement_id || body.requirement?.id || body.requirement?.requirement_id;\nif (!requirementId) throw new Error('Falta requirement_id. El backend debe enviar { requirement: { id } } o { requirement_id }.');\nreturn [{ json: {\n  requirement_id: requirementId,\n  approval_id: body.approval_id || null,\n  approved_by_id: body.approved_by_id || body.requirement?.approved_by_id || null,\n  approved_by: body.approved_by || 'Jefe de IT',\n  manager_email: body.manager_email || $env.MANAGER_EMAIL || '',\n  backend_payload: body\n}}];"
+      },
+      "id": "wf1-notify-002",
+      "name": "Normalizar Payload Backend",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/requirements",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_SERVICE_KEY }}" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "id", "value": "=eq.{{ $json.requirement_id }}" },
+            { "name": "select", "value": "id,title,summary,status,approved_at,approved_by_id,project_id,meeting_id,projects(id,name,team_id,owner_id,business_area,status,target_date),meetings(id,title,recorded_at,status)" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "wf1-notify-003",
+      "name": "Consultar Requirement",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/tickets",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_SERVICE_KEY }}" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "requirement_id", "value": "=eq.{{ $('Normalizar Payload Backend').first().json.requirement_id }}" },
+            { "name": "select", "value": "id,requirement_id,project_id,title,description,priority,estimate_hours,required_skill_id,risk_pct,assignee_id,assignment_reasoning,status,deadline,kanban_order,members:assignee_id(id,name,email,role,current_load,is_manager),skills:required_skill_id(id,code,label),ticket_assignments(id,assignee_id,risk_pct,reasoning,source,is_current,created_at)" },
+            { "name": "order", "value": "kanban_order.asc.nullslast,priority.desc,created_at.asc" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "wf1-notify-004",
+      "name": "Consultar Tickets Asignados",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [860, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/members",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_SERVICE_KEY }}" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "is_manager", "value": "eq.true" },
+            { "name": "select", "value": "id,team_id,name,email,role,current_load,is_manager" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "wf1-notify-005",
+      "name": "Consultar Managers",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1080, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "function collect(name) {\n  const raw = $items(name).map(item => item.json);\n  if (raw.length === 1 && Array.isArray(raw[0])) return raw[0];\n  return raw;\n}\nconst payload = $('Normalizar Payload Backend').first().json;\nconst requirement = collect('Consultar Requirement')[0];\nconst tickets = collect('Consultar Tickets Asignados');\nconst managers = collect('Consultar Managers');\nif (!requirement) throw new Error('Requirement no encontrado en Supabase.');\nconst project = requirement.projects || {};\nconst manager = managers.find(m => m.id === project.owner_id) || managers.find(m => m.team_id === project.team_id) || managers[0] || null;\nconst managerEmail = payload.manager_email || manager?.email || '';\nconst managerId = manager?.id || payload.approved_by_id || null;\nconst assigned = tickets.filter(t => t.assignee_id && t.members);\nif (!assigned.length) throw new Error('No hay tickets asignados. Ejecuta /api/agents/assignment antes de aprobar o antes de llamar n8n.');\nreturn assigned.map((ticket, index) => {\n  const member = ticket.members || {};\n  const currentAssignment = (ticket.ticket_assignments || []).find(a => a.is_current && a.assignee_id === ticket.assignee_id) || (ticket.ticket_assignments || [])[0] || {};\n  const reasoning = ticket.assignment_reasoning || currentAssignment.reasoning || 'Asignado por el Assignment Agent del backend usando skills y carga actual.';\n  return { json: {\n    approval_id: payload.approval_id,\n    requirement_id: requirement.id,\n    requirement_title: requirement.title || 'Requirement aprobado',\n    requirement_summary: requirement.summary || '',\n    project_id: project.id,\n    project_name: project.name || 'Proyecto',\n    team_id: project.team_id,\n    approved_by: payload.approved_by,\n    manager_id: managerId,\n    manager_email: managerEmail,\n    ticket_id: ticket.id,\n    ticket_title: ticket.title,\n    ticket_description: ticket.description,\n    priority: ticket.priority || 'medium',\n    estimate_hours: ticket.estimate_hours || 0,\n    required_skill: ticket.skills?.label || ticket.skills?.code || 'general',\n    risk_pct: ticket.risk_pct || currentAssignment.risk_pct || 0,\n    status: ticket.status,\n    deadline: ticket.deadline,\n    kanban_order: ticket.kanban_order || index + 1,\n    assignment_reasoning: reasoning,\n    assignee_id: member.id,\n    assignee_name: member.name || 'Developer',\n    assignee_email: member.email || '',\n    assignee_role: member.role || '',\n    assignee_current_load: member.current_load || 0\n  }};\n});"
+      },
+      "id": "wf1-notify-006",
+      "name": "Construir Correos desde Supabase",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1300, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": false, "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "assignee-email",
+              "leftValue": "={{ $json.assignee_email }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "notEmpty" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "wf1-notify-007",
+      "name": "Filtrar Developers con Email",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [1520, 300]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.SMTP_FROM }}",
+        "toEmail": "={{ $json.assignee_email }}",
+        "subject": "=Ticket asignado: {{ $json.ticket_title }}",
+        "emailFormat": "html",
+        "message": "=<div style=\"font-family:Arial,sans-serif;max-width:640px;margin:0 auto;color:#111\"><h2>Ticket asignado: {{ $json.ticket_title }}</h2><p>Hola <strong>{{ $json.assignee_name }}</strong>, el Assignment Agent del backend te asigno este ticket despues de revisar skills y carga del equipo.</p><table style=\"border-collapse:collapse;width:100%;margin:16px 0\"><tr><td style=\"padding:8px 12px;background:#f5f5f5;font-weight:700\">Proyecto</td><td style=\"padding:8px 12px;border:1px solid #e5e5e5\">{{ $json.project_name }}</td></tr><tr><td style=\"padding:8px 12px;background:#f5f5f5;font-weight:700\">Prioridad</td><td style=\"padding:8px 12px;border:1px solid #e5e5e5\">{{ $json.priority }}</td></tr><tr><td style=\"padding:8px 12px;background:#f5f5f5;font-weight:700\">Skill requerido</td><td style=\"padding:8px 12px;border:1px solid #e5e5e5\">{{ $json.required_skill }}</td></tr><tr><td style=\"padding:8px 12px;background:#f5f5f5;font-weight:700\">Horas estimadas</td><td style=\"padding:8px 12px;border:1px solid #e5e5e5\">{{ $json.estimate_hours }}h</td></tr><tr><td style=\"padding:8px 12px;background:#f5f5f5;font-weight:700\">Deadline</td><td style=\"padding:8px 12px;border:1px solid #e5e5e5\">{{ $json.deadline || 'Por definir' }}</td></tr><tr><td style=\"padding:8px 12px;background:#f5f5f5;font-weight:700\">Riesgo</td><td style=\"padding:8px 12px;border:1px solid #e5e5e5\">{{ $json.risk_pct }}%</td></tr></table><p style=\"background:#f9fafb;padding:12px;border-radius:8px\"><strong>Razonamiento del agente:</strong><br>{{ $json.assignment_reasoning }}</p><p style=\"font-size:13px;color:#6b7280\">Meeting to Tickets PM</p></div>",
+        "options": {}
+      },
+      "id": "wf1-notify-008",
+      "name": "Email Developer Asignado",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1740, 300],
+      "credentials": { "smtp": { "id": "smtp-cred-id", "name": "SMTP" } }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/notifications",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "return=minimal" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ approval_id: $json.approval_id, ticket_id: $json.ticket_id, member_id: $json.assignee_id, channel: 'email', template: 'ticket_assigned_after_backend_agent', status: 'sent', sent_at: $now.toISO(), metadata: { to: $json.assignee_email, project_name: $json.project_name, risk_pct: $json.risk_pct, source: 'backend_assignment_agent' } }) }}",
+        "options": {}
+      },
+      "id": "wf1-notify-009",
+      "name": "Log Email Developer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1960, 300]
+    },
+    {
+      "parameters": {
+        "aggregate": "aggregateAllItemData",
+        "destinationFieldName": "assignments",
+        "options": {}
+      },
+      "id": "wf1-notify-010",
+      "name": "Agrupar Asignaciones Notificadas",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [2180, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const assignments = $input.first().json.assignments || [];\nif (!assignments.length) return [];\nconst first = assignments[0];\nconst rows = assignments.map(a => {\n  const riskColor = a.risk_pct > 60 ? '#dc2626' : a.risk_pct > 40 ? '#d97706' : '#16a34a';\n  return `<tr><td style=\"padding:8px 12px;border-top:1px solid #e5e5e5\">${a.ticket_title}</td><td style=\"padding:8px 12px;border-top:1px solid #e5e5e5\">${a.assignee_name}</td><td style=\"padding:8px 12px;border-top:1px solid #e5e5e5\">${a.priority}</td><td style=\"padding:8px 12px;border-top:1px solid #e5e5e5;color:${riskColor};font-weight:700\">${a.risk_pct}%</td><td style=\"padding:8px 12px;border-top:1px solid #e5e5e5\">${a.assignment_reasoning}</td></tr>`;\n}).join('');\nconst totalHours = assignments.reduce((sum, a) => sum + (a.estimate_hours || 0), 0);\nconst highRisk = assignments.filter(a => a.risk_pct > 60).length;\nconst html = `<div style=\"font-family:Arial,sans-serif;max-width:760px;margin:0 auto;color:#111\"><h2>Asignaciones notificadas: ${first.requirement_title}</h2><p><strong>Proyecto:</strong> ${first.project_name}</p><p>El backend ejecuto el Assignment Agent, guardo las asignaciones en Supabase y n8n notifico a los developers.</p><div style=\"display:flex;gap:16px;margin:16px 0\"><div style=\"background:#f5f5f5;padding:12px 18px;border-radius:8px\"><strong>${assignments.length}</strong><br><span style=\"color:#6b7280;font-size:13px\">tickets</span></div><div style=\"background:#f5f5f5;padding:12px 18px;border-radius:8px\"><strong>${totalHours}h</strong><br><span style=\"color:#6b7280;font-size:13px\">estimadas</span></div><div style=\"background:${highRisk ? '#fef2f2' : '#f0fdf4'};padding:12px 18px;border-radius:8px\"><strong>${highRisk}</strong><br><span style=\"color:#6b7280;font-size:13px\">riesgo alto</span></div></div><table style=\"border-collapse:collapse;width:100%\"><tr style=\"background:#111;color:#fff\"><th style=\"padding:8px 12px;text-align:left\">Ticket</th><th style=\"padding:8px 12px;text-align:left\">Developer</th><th style=\"padding:8px 12px;text-align:left\">Prioridad</th><th style=\"padding:8px 12px;text-align:left\">Riesgo</th><th style=\"padding:8px 12px;text-align:left\">Por que</th></tr>${rows}</table><p style=\"font-size:13px;color:#6b7280;margin-top:24px\">Fuente de decision: backend Assignment Agent + Supabase.</p></div>`;\nreturn [{ json: { approval_id: first.approval_id, manager_id: first.manager_id, manager_email: first.manager_email, requirement_id: first.requirement_id, requirement_title: first.requirement_title, total_assignments: assignments.length, summary_html: html } }];"
+      },
+      "id": "wf1-notify-011",
+      "name": "Construir Resumen Jefe IT",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2400, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": false, "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "manager-email",
+              "leftValue": "={{ $json.manager_email }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "notEmpty" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "wf1-notify-012",
+      "name": "Filtrar Jefe con Email",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [2620, 300]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.SMTP_FROM }}",
+        "toEmail": "={{ $json.manager_email }}",
+        "subject": "=Asignaciones notificadas: {{ $json.requirement_title }}",
+        "emailFormat": "html",
+        "message": "={{ $json.summary_html }}",
+        "options": {}
+      },
+      "id": "wf1-notify-013",
+      "name": "Email Resumen Jefe IT",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [2840, 300],
+      "credentials": { "smtp": { "id": "smtp-cred-id", "name": "SMTP" } }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/notifications",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_SERVICE_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Prefer", "value": "return=minimal" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ approval_id: $json.approval_id, member_id: $json.manager_id, channel: 'email', template: 'manager_assignment_summary_after_backend_agent', status: 'sent', sent_at: $now.toISO(), metadata: { to: $json.manager_email, requirement_id: $json.requirement_id, total_assignments: $json.total_assignments, source: 'backend_assignment_agent' } }) }}",
+        "options": {}
+      },
+      "id": "wf1-notify-014",
+      "name": "Log Email Jefe IT",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3060, 300]
+    }
+  ],
+  "connections": {
+    "Webhook Backend Approval": { "main": [[{ "node": "Normalizar Payload Backend", "type": "main", "index": 0 }]] },
+    "Normalizar Payload Backend": { "main": [[{ "node": "Consultar Requirement", "type": "main", "index": 0 }]] },
+    "Consultar Requirement": { "main": [[{ "node": "Consultar Tickets Asignados", "type": "main", "index": 0 }]] },
+    "Consultar Tickets Asignados": { "main": [[{ "node": "Consultar Managers", "type": "main", "index": 0 }]] },
+    "Consultar Managers": { "main": [[{ "node": "Construir Correos desde Supabase", "type": "main", "index": 0 }]] },
+    "Construir Correos desde Supabase": { "main": [[{ "node": "Filtrar Developers con Email", "type": "main", "index": 0 }]] },
+    "Filtrar Developers con Email": { "main": [[{ "node": "Email Developer Asignado", "type": "main", "index": 0 }]] },
+    "Email Developer Asignado": { "main": [[{ "node": "Log Email Developer", "type": "main", "index": 0 }]] },
+    "Log Email Developer": { "main": [[{ "node": "Agrupar Asignaciones Notificadas", "type": "main", "index": 0 }]] },
+    "Agrupar Asignaciones Notificadas": { "main": [[{ "node": "Construir Resumen Jefe IT", "type": "main", "index": 0 }]] },
+    "Construir Resumen Jefe IT": { "main": [[{ "node": "Filtrar Jefe con Email", "type": "main", "index": 0 }]] },
+    "Filtrar Jefe con Email": { "main": [[{ "node": "Email Resumen Jefe IT", "type": "main", "index": 0 }]] },
+    "Email Resumen Jefe IT": { "main": [[{ "node": "Log Email Jefe IT", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "kb-buildathon-2026"
+  },
+  "id": "wf-notificar-asignaciones-aprobadas-2026",
+  "tags": [{ "id": "tag-pm", "name": "meeting-to-tickets" }]
+}
