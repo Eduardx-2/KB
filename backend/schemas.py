@@ -46,18 +46,6 @@ class AssignmentAgentRequest(BaseModel):
     requirement_id: str
 
 
-class CreateRequirementRequest(BaseModel):
-    title: Optional[str] = None
-    project_id: Optional[str] = None
-
-
-class CreateRequirementResponse(BaseModel):
-    id: str
-    project_id: str
-    title: Optional[str] = None
-    status: str
-
-
 class TicketPatch(BaseModel):
     """Todos opcionales: solo se actualiza lo que venga."""
     status: Optional[Literal["backlog", "todo", "in_progress", "done"]] = None
@@ -76,16 +64,33 @@ class HealthResponse(BaseModel):
     version: str
 
 
-# ---------- Error tracking ----------
+# ---------- Nuevos endpoints de contexto ----------
 
-class ClientErrorReport(BaseModel):
-    """Error del frontend reportado al backend (el front no escribe directo a la DB)."""
-    message: str
-    error_type: Optional[str] = None
-    severity: Optional[Literal["info", "warning", "error", "critical"]] = "error"
-    http_status: Optional[int] = None
-    http_method: Optional[str] = None
-    path: Optional[str] = None
-    stack: Optional[str] = None
-    context: Optional[dict] = None
-    request_id: Optional[str] = None
+class CreateRequirementRequest(BaseModel):
+    title: str
+    project_id: Optional[str] = None
+
+
+class CreateRequirementResponse(BaseModel):
+    id: str
+    title: str
+    project_id: str
+    status: str
+
+
+class MemberOut(BaseModel):
+    id: str
+    name: str
+    role: Optional[str] = None
+    email: Optional[str] = None
+    current_load: int = 0
+    is_manager: bool = False
+    skills: list[str] = []
+
+
+class ProjectOut(BaseModel):
+    id: str
+    name: str
+    status: Optional[str] = None
+    business_area: Optional[str] = None
+    target_date: Optional[str] = None

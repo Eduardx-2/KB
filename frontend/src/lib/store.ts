@@ -22,7 +22,7 @@ interface AppState {
 
   setHydrated: () => void;
   setMembers: (members: Member[]) => void;
-  createRequirement: (title: string, transcript: string, id?: string) => string;
+  createRequirement: (title: string, transcript: string, backendId?: string) => string;
   setTranscript: (requirementId: string, transcript: string) => void;
   renameRequirement: (requirementId: string, title: string) => void;
   applyMeetingOutput: (requirementId: string, output: MeetingAgentOutput) => void;
@@ -58,19 +58,19 @@ export const useAppStore = create<AppState>()(
 
       setMembers: (members) => set({ members }),
 
-      createRequirement: (title, transcript, id) => {
-        const rid = id ?? uid("req");
+      createRequirement: (title, transcript, backendId) => {
+        const id = backendId ?? uid("req");
         const requirement: Requirement = {
-          id: rid,
+          id,
           title: title.trim() || "Reunión sin título",
           raw_transcript: transcript,
           summary: "",
           status: "draft",
           created_at: new Date().toISOString(),
-          team_id: "demo",
+          team_id: "live",
         };
         set((s) => ({ requirements: [requirement, ...s.requirements] }));
-        return rid;
+        return id;
       },
 
       setTranscript: (requirementId, transcript) => {

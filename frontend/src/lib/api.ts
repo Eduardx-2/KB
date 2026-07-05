@@ -1,8 +1,7 @@
 import { useAppStore } from "./store";
 import { simulateAssignmentAgent, simulateMeetingAgent } from "./mock-engine";
-import { reportClientError, type ErrorSeverity } from "./error-reporting";
 import { sleep } from "./utils";
-import type { AssignmentAgentOutput, ErrorLog, HealthState, Member, MeetingAgentOutput, RunMode } from "./types";
+import type { AssignmentAgentOutput, HealthState, MeetingAgentOutput, Member, RunMode } from "./types";
 
 /**
  * Capa de acceso a datos. Sigue la regla del CONTRATO: el frontend nunca
@@ -27,34 +26,6 @@ async function fetchWithTimeout(input: string, init: RequestInit = {}, timeoutMs
   }
 }
 
-/** Error enriquecido con el status HTTP y el request_id para correlacionar con error_logs. */
-type BackendError = Error & { status?: number; requestId?: string };
-
-/** Lanza si la respuesta no fue ok, adjuntando status + X-Request-ID del backend. */
-function assertOk(res: Response): void {
-  if (res.ok) return;
-  const err = new Error(`HTTP ${res.status}`) as BackendError;
-  err.status = res.status;
-  err.requestId = res.headers.get("X-Request-ID") ?? undefined;
-  throw err;
-}
-
-/** Reporta al backend un fallo de una llamada (una sola vez por intento). */
-function reportApiFailure(method: string, path: string, err: unknown): void {
-  const e = err as BackendError;
-  const status = e?.status;
-  const severity: ErrorSeverity = status && status < 500 ? "warning" : "error";
-  void reportClientError({
-    message: e?.message || `Fallo en ${method} ${path}`,
-    error_type: e?.name || "FetchError",
-    severity,
-    http_status: status,
-    http_method: method,
-    path,
-    request_id: e?.requestId,
-  });
-}
-
 export async function checkHealth(): Promise<HealthState> {
   const checked_at = new Date().toISOString();
   if (!HAS_LIVE_BACKEND) {
@@ -62,41 +33,11 @@ export async function checkHealth(): Promise<HealthState> {
   }
   try {
     const res = await fetchWithTimeout(`${API_BASE}/api/health`, {}, 3500);
-    assertOk(res);
+    if (!res.ok) throw new Error(String(res.status));
     const data = await res.json();
     return { status: data.status === "ok" ? "ok" : "error", version: data.version, mode: "live", checked_at };
-  } catch (err) {
-    reportApiFailure("GET", "/api/health", err);
+  } catch {
     return { status: "error", mode: "live", checked_at };
-  }
-}
-
-/**
- * Crea el requirement en el backend (Supabase) y devuelve su id REAL (uuid).
- * Es el paso que alinea el frontend con el backend: el resto del pipeline
- * (meeting/assignment/approve) necesita un requirement_id que exista en la DB.
- * Si no hay backend real o falla, devuelve id null y el caller usa un id local.
- */
-export async function createRequirement(
-  title: string
-): Promise<{ id: string | null; mode: RunMode }> {
-  if (!HAS_LIVE_BACKEND) return { id: null, mode: "mock" };
-  try {
-    const res = await fetchWithTimeout(
-      `${API_BASE}/api/requirements`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title }),
-      },
-      8000
-    );
-    assertOk(res);
-    const data = await res.json();
-    return { id: (data.id as string) ?? null, mode: "live" };
-  } catch (err) {
-    reportApiFailure("POST", "/api/requirements", err);
-    return { id: null, mode: "mock" };
   }
 }
 
@@ -107,7 +48,7 @@ export async function transcribeAudio(file: Blob): Promise<{ text: string; mode:
       const form = new FormData();
       form.append("file", file, "grabacion.webm");
       const res = await fetchWithTimeout(`${API_BASE}/api/transcribe`, { method: "POST", body: form }, 20000);
-      assertOk(res);
+      if (!res.ok) throw new Error(String(res.status));
       const data = await res.json();
       useAppStore.getState().pushAgentLog({
         agent: "transcribe",
@@ -116,8 +57,7 @@ export async function transcribeAudio(file: Blob): Promise<{ text: string; mode:
         ok: true,
       });
       return { text: data.text, mode: "live" };
-    } catch (err) {
-      reportApiFailure("POST", "/api/transcribe", err);
+    } catch {
       // sigue a la simulación de abajo
     }
   }
@@ -153,7 +93,7 @@ export async function runMeetingAgent(
         },
         15000
       );
-      assertOk(res);
+      if (!res.ok) throw new Error(String(res.status));
       const output: MeetingAgentOutput = await res.json();
       useAppStore.getState().pushAgentLog({
         agent: "meeting",
@@ -162,8 +102,7 @@ export async function runMeetingAgent(
         ok: true,
       });
       return { output, mode: "live" };
-    } catch (err) {
-      reportApiFailure("POST", "/api/agents/meeting", err);
+    } catch {
       // sigue a la simulación
     }
   }
@@ -194,7 +133,7 @@ export async function runAssignmentAgent(
         },
         15000
       );
-      assertOk(res);
+      if (!res.ok) throw new Error(String(res.status));
       const output: AssignmentAgentOutput = await res.json();
       useAppStore.getState().pushAgentLog({
         agent: "assignment",
@@ -203,8 +142,7 @@ export async function runAssignmentAgent(
         ok: true,
       });
       return { output, mode: "live" };
-    } catch (err) {
-      reportApiFailure("POST", "/api/agents/assignment", err);
+    } catch {
       // sigue a la simulación
     }
   }
@@ -246,15 +184,84 @@ export async function patchTicket(
         },
         8000
       );
-      assertOk(res);
+      if (!res.ok) throw new Error(String(res.status));
       return { mode: "live" };
-    } catch (err) {
-      reportApiFailure("PATCH", `/api/tickets/${ticketId}`, err);
+    } catch {
       // sigue a la simulación
     }
   }
   await sleep(220);
   return { mode: "mock" };
+}
+
+/** Crea un requirement en Supabase via backend y devuelve el ID real. */
+export async function createRequirementInBackend(
+  title: string,
+  projectId?: string
+): Promise<{ id: string; mode: RunMode }> {
+  if (HAS_LIVE_BACKEND) {
+    try {
+      const res = await fetchWithTimeout(
+        `${API_BASE}/api/requirements`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title, project_id: projectId }),
+        },
+        8000
+      );
+      if (!res.ok) throw new Error(String(res.status));
+      const data = await res.json();
+      return { id: data.id, mode: "live" };
+    } catch {
+      // sigue a mock
+    }
+  }
+  // fallback: genera un ID local
+  const id = `req-${crypto.randomUUID?.() ?? Math.random().toString(36).slice(2)}`;
+  return { id, mode: "mock" };
+}
+
+/** Carga miembros reales desde el backend (Supabase → FastAPI → frontend). */
+export async function fetchMembers(): Promise<{ members: Member[]; mode: RunMode }> {
+  if (HAS_LIVE_BACKEND) {
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/api/members`, {}, 6000);
+      if (!res.ok) throw new Error(String(res.status));
+      const raw: Array<{
+        id: string; name: string; role: string; email?: string;
+        current_load: number; is_manager: boolean; skills: string[];
+      }> = await res.json();
+      const members: Member[] = raw.map((m) => ({
+        id: m.id,
+        name: m.name,
+        role: m.role,
+        email: m.email,
+        skills: (m.skills ?? []) as Member["skills"],
+        current_load: m.current_load,
+        team_id: "live",
+      }));
+      return { members, mode: "live" };
+    } catch {
+      // sigue a mock
+    }
+  }
+  return { members: [], mode: "mock" };
+}
+
+/** Carga proyectos disponibles desde el backend. */
+export async function fetchProjects(): Promise<{ projects: Array<{ id: string; name: string }>; mode: RunMode }> {
+  if (HAS_LIVE_BACKEND) {
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/api/projects`, {}, 6000);
+      if (!res.ok) throw new Error(String(res.status));
+      const projects = await res.json();
+      return { projects, mode: "live" };
+    } catch {
+      // sigue a mock
+    }
+  }
+  return { projects: [], mode: "mock" };
 }
 
 export async function approveRequirement(
@@ -264,7 +271,7 @@ export async function approveRequirement(
   if (HAS_LIVE_BACKEND) {
     try {
       const res = await fetchWithTimeout(`${API_BASE}/api/approve/${requirementId}`, { method: "POST" }, 10000);
-      assertOk(res);
+      if (!res.ok) throw new Error(String(res.status));
       const data = await res.json();
       useAppStore.getState().pushAgentLog({
         agent: "approve",
@@ -273,8 +280,7 @@ export async function approveRequirement(
         ok: true,
       });
       return { n8n_notified: Boolean(data.n8n_notified), mode: "live" };
-    } catch (err) {
-      reportApiFailure("POST", `/api/approve/${requirementId}`, err);
+    } catch {
       // sigue a la simulación
     }
   }
@@ -287,34 +293,4 @@ export async function approveRequirement(
     ok: true,
   });
   return { n8n_notified: true, mode: "mock" };
-}
-
-/**
- * Trae los miembros reales del equipo desde el backend (Supabase).
- * Devuelve `null` si no hay backend real o si la llamada falla, para que
- * el caller conserve el seed local (mock) y la UI nunca quede vacía.
- */
-export async function fetchMembers(): Promise<Member[] | null> {
-  if (!HAS_LIVE_BACKEND) return null;
-  try {
-    const res = await fetchWithTimeout(`${API_BASE}/api/members`, {}, 6000);
-    assertOk(res);
-    const data = (await res.json()) as Member[];
-    return Array.isArray(data) && data.length > 0 ? data : null;
-  } catch (err) {
-    reportApiFailure("GET", "/api/members", err);
-    return null;
-  }
-}
-
-/** Lee los últimos errores registrados (backend + frontend). Vacío si no hay backend real. */
-export async function fetchErrorLogs(limit = 50): Promise<ErrorLog[]> {
-  if (!HAS_LIVE_BACKEND) return [];
-  try {
-    const res = await fetchWithTimeout(`${API_BASE}/api/errors?limit=${limit}`, {}, 6000);
-    assertOk(res);
-    return (await res.json()) as ErrorLog[];
-  } catch {
-    return [];
-  }
 }

@@ -10,12 +10,7 @@ import { Button } from "@/components/ui/button";
 import { AudioRecorder } from "@/components/meeting/audio-recorder";
 import { PipelineSteps, type PipelineStep } from "@/components/meeting/pipeline-steps";
 import { useAppStore } from "@/lib/store";
-import {
-  createRequirement as createRequirementApi,
-  runAssignmentAgent,
-  runMeetingAgent,
-  transcribeAudio,
-} from "@/lib/api";
+import { createRequirementInBackend, runAssignmentAgent, runMeetingAgent, transcribeAudio } from "@/lib/api";
 import { GOLDEN_TRANSCRIPT, REALISTIC_TRANSCRIPT } from "@/lib/mock-data";
 import { cn } from "@/lib/utils";
 
@@ -67,16 +62,11 @@ export default function NuevaReunionPage() {
       title.trim() ||
       (source === "text" ? text : "Reunión grabada").slice(0, 60).replace(/\s+\S*$/, "") + "…";
 
-    try {
-      // Con backend real, creamos primero el requirement en Supabase para usar su
-      // id real (uuid) en todo el pipeline. Sin backend, cae a un id local.
-      const { id: backendId } = await createRequirementApi(autoTitle);
-      const requirementId = createRequirement(
-        autoTitle,
-        source === "text" ? text : "",
-        backendId ?? undefined
-      );
+    // Crear primero en el backend para obtener un UUID real de Supabase
+    const { id: backendId } = await createRequirementInBackend(autoTitle);
+    const requirementId = createRequirement(autoTitle, source === "text" ? text : "", backendId);
 
+    try {
       let transcript = text;
 
       if (source === "audio" && audioBlob) {

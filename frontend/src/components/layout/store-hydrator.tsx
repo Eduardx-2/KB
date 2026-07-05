@@ -2,9 +2,12 @@
 
 import { useEffect } from "react";
 import { useAppStore } from "@/lib/store";
-import { fetchMembers } from "@/lib/api";
+import { fetchMembers, HAS_LIVE_BACKEND } from "@/lib/api";
 
-/** Garantiza que el store de Zustand hidrate aunque localStorage falle o tarde. */
+/**
+ * Hidrata el store de Zustand y, si hay backend real configurado,
+ * reemplaza los miembros mock con los reales de Supabase.
+ */
 export function StoreHydrator() {
   useEffect(() => {
     const finish = () => useAppStore.getState().setHydrated();
@@ -15,11 +18,16 @@ export function StoreHydrator() {
 
     const timer = window.setTimeout(finish, 800);
 
-    // Si hay backend real, reemplaza el equipo mock por los miembros de Supabase
-    // (incluye al manager). Si falla o no hay backend, se conserva el seed local.
-    fetchMembers().then((members) => {
-      if (members) useAppStore.getState().setMembers(members);
-    });
+    // Sincronizar miembros desde backend cuando está disponible
+    if (HAS_LIVE_BACKEND) {
+      fetchMembers().then(({ members, mode }) => {
+        if (mode === "live" && members.length > 0) {
+          useAppStore.getState().setMembers(members);
+        }
+      }).catch(() => {
+        // silencioso — el store sigue con sus datos locales
+      });
+    }
 
     return () => {
       unsub();

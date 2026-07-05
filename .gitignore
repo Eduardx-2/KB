@@ -3,6 +3,10 @@
 backend/.env
 *.env.local
 
+# Keep example files
+!*.env.example
+!frontend/.env.example
+
 # Python
 __pycache__/
 *.pyc

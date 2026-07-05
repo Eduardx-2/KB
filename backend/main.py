@@ -4,8 +4,6 @@ Correr:  uvicorn main:app --reload
 Docs:    http://localhost:8000/docs
 """
 import logging
-import traceback
-import uuid
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,33 +14,35 @@ try:
     from . import services
     from .config import get_settings
     from .schemas import (
-        ApproveResponse,
-        AssignmentAgentOutput,
-        AssignmentAgentRequest,
-        ClientErrorReport,
-        CreateRequirementRequest,
-        CreateRequirementResponse,
-        HealthResponse,
-        MeetingAgentOutput,
-        MeetingAgentRequest,
-        TicketPatch,
-        TranscribeResponse,
+    ApproveResponse,
+    AssignmentAgentOutput,
+    AssignmentAgentRequest,
+    CreateRequirementRequest,
+    CreateRequirementResponse,
+    HealthResponse,
+    MeetingAgentOutput,
+    MeetingAgentRequest,
+    MemberOut,
+    ProjectOut,
+    TicketPatch,
+    TranscribeResponse,
     )
 except ImportError:  # Permite `uvicorn main:app` desde backend/.
     import services
     from config import get_settings
     from schemas import (
-        ApproveResponse,
-        AssignmentAgentOutput,
-        AssignmentAgentRequest,
-        ClientErrorReport,
-        CreateRequirementRequest,
-        CreateRequirementResponse,
-        HealthResponse,
-        MeetingAgentOutput,
-        MeetingAgentRequest,
-        TicketPatch,
-        TranscribeResponse,
+    ApproveResponse,
+    AssignmentAgentOutput,
+    AssignmentAgentRequest,
+    CreateRequirementRequest,
+    CreateRequirementResponse,
+    HealthResponse,
+    MeetingAgentOutput,
+    MeetingAgentRequest,
+    MemberOut,
+    ProjectOut,
+    TicketPatch,
+    TranscribeResponse,
     )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -50,77 +50,35 @@ logger = logging.getLogger("app")
 
 app = FastAPI(title="AI Meeting-to-Tickets PM", version=get_settings().APP_VERSION)
 
-# CORS abierto — es un hackathon. Exponemos X-Request-ID para poder
-# correlacionar un error visto en el navegador con la fila en error_logs.
+# CORS abierto — es un hackathon.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["X-Request-ID"],
 )
-
-
-@app.middleware("http")
-async def request_id_middleware(request: Request, call_next):
-    """Asigna un request_id a cada request y lo devuelve en X-Request-ID."""
-    request_id = request.headers.get("x-request-id") or uuid.uuid4().hex
-    request.state.request_id = request_id
-    response = await call_next(request)
-    response.headers["X-Request-ID"] = request_id
-    return response
 
 
 # ---------- Manejo global de errores: nunca crashea Uvicorn ----------
 
-def _request_id(request: Request) -> str:
-    return getattr(request.state, "request_id", None) or uuid.uuid4().hex
-
-
-def _error_response(request: Request, *, status: int, detail: str, exc: Exception, severity: str) -> JSONResponse:
-    """Registra el error en error_logs y responde incluyendo el request_id."""
-    request_id = _request_id(request)
-    services.log_error(
-        message=str(exc) or detail,
-        source="backend",
-        severity=severity,
-        error_type=type(exc).__name__,
-        http_status=status,
-        http_method=request.method,
-        path=request.url.path,
-        stack=traceback.format_exc(),
-        request_id=request_id,
-        user_agent=request.headers.get("user-agent"),
-    )
-    return JSONResponse(
-        status_code=status,
-        content={"detail": detail, "request_id": request_id},
-        headers={"X-Request-ID": request_id},
-    )
-
-
 @app.exception_handler(OpenAIError)
 async def openai_error_handler(request: Request, exc: OpenAIError):
     logger.error("OpenAI error en %s: %s", request.url.path, exc)
-    return _error_response(
-        request, status=500, detail=f"Error del LLM: {type(exc).__name__}", exc=exc, severity="error"
-    )
+    return JSONResponse(status_code=500, content={"detail": f"Error del LLM: {type(exc).__name__}"})
 
 
 @app.exception_handler(RuntimeError)
 async def config_error_handler(request: Request, exc: RuntimeError):
     # Errores de configuración/estado controlado (p.ej. falta una API key).
     logger.warning("RuntimeError en %s: %s", request.url.path, exc)
-    return _error_response(request, status=503, detail=str(exc), exc=exc, severity="warning")
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
 @app.exception_handler(Exception)
 async def global_error_handler(request: Request, exc: Exception):
     logger.exception("Error no manejado en %s", request.url.path)
-    return _error_response(
-        request, status=500, detail="Error interno del servidor", exc=exc, severity="critical"
-    )
+    return JSONResponse(status_code=500, content={"detail": "Error interno del servidor"})
 
 
 # ---------- Helpers de datos ----------
@@ -191,22 +149,6 @@ def _hydrate_members_with_skills(members: list[dict]) -> list[dict]:
         }
         for member in members
     ]
-
-
-# ---------- 0. Crear requirement (para que el frontend obtenga un id real) ----------
-
-@app.post("/api/requirements", response_model=CreateRequirementResponse, status_code=201)
-def create_requirement(body: CreateRequirementRequest):
-    project_id = body.project_id or services.get_default_project_id()
-    if not project_id:
-        raise HTTPException(status_code=400, detail="No hay proyecto disponible en la base de datos")
-    row = services.create_requirement(project_id=project_id, title=body.title)
-    return CreateRequirementResponse(
-        id=row["id"],
-        project_id=row["project_id"],
-        title=row.get("title"),
-        status=row["status"],
-    )
 
 
 # ---------- 1. Transcripción ----------
@@ -314,14 +256,9 @@ def assignment_agent(body: AssignmentAgentRequest):
                 rec.assignee_name,
             )
             continue
-        previous_status = ticket.get("status")
         sb.table("tickets").update(
             {"assignee_id": member["id"], "risk_pct": rec.risk_pct, "status": "todo"}
         ).eq("id", ticket["id"]).execute()
-
-        # Trazabilidad: historial de asignación + evento de cambio de estado.
-        services.record_assignment(ticket["id"], member["id"], rec.risk_pct, rec.reasoning)
-        services.log_ticket_status_event(ticket["id"], previous_status, "todo", source="agent")
 
     return output
 
@@ -333,23 +270,9 @@ def patch_ticket(ticket_id: str, body: TicketPatch):
     updates = body.model_dump(exclude_none=True)
     if not updates:
         raise HTTPException(status_code=400, detail="Nada que actualizar")
-
-    sb = services.get_supabase()
-
-    # Estado previo para la bitácora (solo si viene un cambio de status).
-    previous_status = None
-    if "status" in updates:
-        current = sb.table("tickets").select("status").eq("id", ticket_id).execute().data
-        if current:
-            previous_status = current[0].get("status")
-
-    res = sb.table("tickets").update(updates).eq("id", ticket_id).execute()
+    res = services.get_supabase().table("tickets").update(updates).eq("id", ticket_id).execute()
     if not res.data:
         raise HTTPException(status_code=404, detail="Ticket no encontrado")
-
-    if "status" in updates:
-        services.log_ticket_status_event(ticket_id, previous_status, updates["status"], source="web")
-
     return res.data[0]
 
 
@@ -359,45 +282,17 @@ def patch_ticket(ticket_id: str, body: TicketPatch):
 def approve(requirement_id: str):
     sb = services.get_supabase()
 
-    req_res = (
-        sb.table("requirements")
-        .update({"status": "approved", "approved_at": "now()"})
-        .eq("id", requirement_id)
-        .execute()
-    )
+    req_res = sb.table("requirements").update({"status": "approved"}).eq("id", requirement_id).execute()
     if not req_res.data:
         raise HTTPException(status_code=404, detail="Requirement no encontrado")
 
     tickets = _get_tickets_by_requirement(requirement_id)
-    payload = {"requirement": req_res.data[0], "tickets": tickets}
-    notified = services.notify_n8n(payload)
-
-    # Trazabilidad: registrar la aprobación y una notificación por assignee.
-    approval_id = services.record_approval(
-        requirement_id, n8n_notified=notified, n8n_ok=notified, webhook_payload=payload
-    )
-    services.create_notifications(approval_id, tickets)
+    notified = services.notify_n8n({"requirement": req_res.data[0], "tickets": tickets})
 
     return ApproveResponse(status="approved", requirement_id=requirement_id, n8n_notified=notified)
 
 
-# ---------- 6. Miembros del equipo ----------
-
-@app.get("/api/members")
-def list_members():
-    """Lista los miembros del equipo (con sus skills) para la vista de Equipo del frontend."""
-    rows = (
-        services.get_supabase()
-        .table("members")
-        .select("id, team_id, name, role, current_load, is_manager")
-        .order("is_manager")
-        .order("name")
-        .execute()
-    ).data or []
-    return _hydrate_members_with_skills(rows)
-
-
-# ---------- 7. Health ----------
+# ---------- 6. Health ----------
 
 @app.get("/api/health", response_model=HealthResponse)
 def health():
@@ -410,28 +305,67 @@ def health_db():
     return {"status": "ok", "supabase": True, "rows_checked": len(res.data or [])}
 
 
-# ---------- 8. Error tracking ----------
+# ---------- 7. Crear requirement (necesario antes del meeting agent) ----------
 
-@app.post("/api/client-errors", status_code=201)
-def report_client_error(body: ClientErrorReport, request: Request):
-    """El frontend reporta acá sus errores (no escribe directo a Supabase)."""
-    services.log_error(
-        message=body.message,
-        source="frontend",
-        severity=body.severity or "error",
-        error_type=body.error_type,
-        http_status=body.http_status,
-        http_method=body.http_method,
-        path=body.path,
-        stack=body.stack,
-        context=body.context,
-        request_id=body.request_id or _request_id(request),
-        user_agent=request.headers.get("user-agent"),
+@app.post("/api/requirements", response_model=CreateRequirementResponse)
+def create_requirement(body: CreateRequirementRequest):
+    sb = services.get_supabase()
+
+    project_id = body.project_id or services.get_default_project_id()
+    if not project_id:
+        raise HTTPException(status_code=404, detail="No hay proyectos en Supabase. Ejecuta el seed primero.")
+
+    res = sb.table("requirements").insert(
+        {"title": body.title.strip() or "Reunión sin título", "project_id": project_id, "status": "draft"}
+    ).execute()
+    if not res.data:
+        raise HTTPException(status_code=500, detail="Error creando requirement en Supabase")
+
+    row = res.data[0]
+    return CreateRequirementResponse(
+        id=row["id"],
+        title=row["title"],
+        project_id=row["project_id"],
+        status=row["status"],
     )
-    return {"logged": True}
 
 
-@app.get("/api/errors")
-def list_errors(limit: int = 50, source: str | None = None):
-    """Últimos errores registrados (backend + frontend) para el panel de Sistema."""
-    return services.list_error_logs(limit=limit, source=source)
+# ---------- 8. Contexto del equipo e IDs de proyectos ----------
+
+@app.get("/api/members", response_model=list[MemberOut])
+def get_members():
+    members = _hydrate_members_with_skills(
+        (services.get_supabase().table("members").select("*").execute()).data or []
+    )
+    return [
+        MemberOut(
+            id=m["id"],
+            name=m["name"],
+            role=m.get("role") or "",
+            email=m.get("email") or "",
+            current_load=m.get("current_load") or 0,
+            is_manager=bool(m.get("is_manager")),
+            skills=m.get("skills", []),
+        )
+        for m in members
+    ]
+
+
+@app.get("/api/projects", response_model=list[ProjectOut])
+def get_projects():
+    rows = (
+        services.get_supabase()
+        .table("projects")
+        .select("id, name, status, business_area, target_date")
+        .execute()
+    ).data or []
+    return [
+        ProjectOut(
+            id=r["id"],
+            name=r["name"],
+            status=r.get("status") or "active",
+            business_area=r.get("business_area"),
+            target_date=r.get("target_date"),
+        )
+        for r in rows
+    ]
