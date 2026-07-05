@@ -1,7 +1,7 @@
 import { useAppStore } from "./store";
 import { simulateAssignmentAgent, simulateMeetingAgent } from "./mock-engine";
 import { sleep } from "./utils";
-import type { AssignmentAgentOutput, HealthState, MeetingAgentOutput, Member, RunMode } from "./types";
+import type { AssignmentAgentOutput, ErrorLog, HealthState, MeetingAgentOutput, Member, RunMode } from "./types";
 
 /**
  * Capa de acceso a datos. Sigue la regla del CONTRATO: el frontend nunca
@@ -262,6 +262,19 @@ export async function fetchProjects(): Promise<{ projects: Array<{ id: string; n
     }
   }
   return { projects: [], mode: "mock" };
+}
+
+/** Lee los últimos errores registrados en Supabase vía backend. */
+export async function fetchErrorLogs(limit = 50): Promise<ErrorLog[]> {
+  if (!HAS_LIVE_BACKEND) return [];
+  try {
+    const res = await fetchWithTimeout(`${API_BASE}/api/errors?limit=${limit}`, {}, 6000);
+    if (!res.ok) throw new Error(String(res.status));
+    const data = await res.json();
+    return Array.isArray(data) ? (data as ErrorLog[]) : [];
+  } catch {
+    return [];
+  }
 }
 
 export async function approveRequirement(
