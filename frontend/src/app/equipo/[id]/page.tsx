@@ -1,39 +1,33 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useParams } from "next/navigation";
+import { toast } from "sonner";
 import {
-  ArrowLeft, CheckCircle2, Clock, Hourglass, TriangleAlert,
-  TrendingUp, AlertCircle, Layers, ChevronRight,
+  ArrowLeft, CheckCircle2, Hourglass, TriangleAlert,
+  TrendingUp, AlertCircle, Layers, Plus,
 } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar } from "@/components/ui/avatar";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
-import { PriorityBadge } from "@/components/tickets/priority-badge";
-import { RiskBadge } from "@/components/tickets/risk-badge";
-import { RequirementStatusBadge } from "@/components/requirements/status-badge";
+import { KanbanBoard } from "@/components/tickets/kanban-board";
+import { TicketDetailSheet } from "@/components/tickets/ticket-detail-sheet";
+import { CreateTicketDialog } from "@/components/tickets/create-ticket-dialog";
 import { useAppStore } from "@/lib/store";
-import { SKILL_LABELS, STATUS_LABELS, loadColorClasses, cn } from "@/lib/utils";
-import type { Ticket } from "@/lib/types";
+import { createTicket, fetchWorkspace, patchTicket } from "@/lib/api";
+import { loadColorClasses, cn, STATUS_LABELS, SKILL_LABELS } from "@/lib/utils";
+import type { CreateTicketInput, Ticket, TicketStatus } from "@/lib/types";
 
 const STATUS_COLORS: Record<Ticket["status"], string> = {
   done: "bg-emerald-500",
   in_progress: "bg-sky-500",
   todo: "bg-amber-400",
   backlog: "bg-neutral-300 dark:bg-neutral-600",
-};
-
-const STATUS_BG: Record<Ticket["status"], string> = {
-  done: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300",
-  in_progress: "bg-sky-50 text-sky-700 dark:bg-sky-950 dark:text-sky-300",
-  todo: "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300",
-  backlog: "bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400",
 };
 
 function MiniStatCard({
@@ -122,12 +116,31 @@ export default function DevDashboardPage() {
   const members = useAppStore((s) => s.members);
   const allTickets = useAppStore((s) => s.tickets);
   const requirements = useAppStore((s) => s.requirements);
+  const updateTicket = useAppStore((s) => s.updateTicket);
+  const addTicket = useAppStore((s) => s.addTicket);
+  const setWorkspace = useAppStore((s) => s.setWorkspace);
+
+  const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createDefaultStatus, setCreateDefaultStatus] = useState<TicketStatus>("todo");
 
   const member = members.find((m) => m.id === params.id);
   const myTickets = useMemo(
     () => allTickets.filter((t) => t.assignee_id === params.id),
     [allTickets, params.id]
   );
+  const myRequirements = useMemo(() => {
+    const reqIds = new Set(myTickets.map((t) => t.requirement_id));
+    return requirements.filter((r) => reqIds.has(r.id));
+  }, [myTickets, requirements]);
+
+  const selected = myTickets.find((t) => t.id === selectedTicket?.id) ?? null;
+  const effectiveLoad = member?.effective_load ?? member?.current_load ?? 0;
+  const activeHours = member?.active_hours ?? myTickets
+    .filter((t) => t.status === "todo" || t.status === "in_progress")
+    .reduce((a, t) => a + t.estimate_hours, 0);
+  const activeCount = member?.active_ticket_count ?? myTickets
+    .filter((t) => t.status === "todo" || t.status === "in_progress").length;
 
   const metrics = useMemo(() => {
     const total = myTickets.length;
@@ -151,14 +164,34 @@ export default function DevDashboardPage() {
     };
   }, [myTickets]);
 
-  // Agrupar tickets por reunión/requisito
-  const byRequirement = useMemo(() => {
-    const reqIds = [...new Set(myTickets.map((t) => t.requirement_id))];
-    return reqIds.map((rid) => ({
-      requirement: requirements.find((r) => r.id === rid),
-      tickets: myTickets.filter((t) => t.requirement_id === rid),
-    }));
-  }, [myTickets, requirements]);
+  async function handleMove(ticketId: string, status: TicketStatus) {
+    updateTicket(ticketId, { status });
+    await patchTicket(ticketId, { status });
+  }
+
+  async function handleUpdate(patch: Partial<Pick<Ticket, "status" | "assignee_id" | "deadline">>) {
+    if (!selected) return;
+    updateTicket(selected.id, patch);
+    await patchTicket(selected.id, patch);
+  }
+
+  async function handleCreateTicket(input: CreateTicketInput) {
+    const { ticket, mode } = await createTicket({
+      ...input,
+      assignee_id: params.id,
+      status: input.status || createDefaultStatus,
+    });
+    if (ticket) {
+      addTicket({ ...ticket, assignee_id: params.id });
+      toast.success("Ticket asignado a " + (member?.name ?? "trabajador"));
+      if (mode === "live") {
+        const workspace = await fetchWorkspace();
+        if (workspace.mode === "live") setWorkspace(workspace);
+      }
+    } else {
+      toast.error("No se pudo crear el ticket");
+    }
+  }
 
   if (!hydrated) {
     return (
@@ -190,8 +223,8 @@ export default function DevDashboardPage() {
     );
   }
 
-  const lc = loadColorClasses(member.current_load);
-  const overloaded = member.current_load > 80;
+  const lc = loadColorClasses(effectiveLoad);
+  const overloaded = effectiveLoad > 80;
 
   return (
     <div>
@@ -231,10 +264,13 @@ export default function DevDashboardPage() {
             {/* Gauge de carga */}
             <div className="min-w-[180px] space-y-2 rounded-xl border border-neutral-200 p-4 dark:border-neutral-800">
               <div className="flex items-center justify-between text-xs">
-                <span className="font-medium text-neutral-600 dark:text-neutral-400">Carga actual</span>
-                <span className={cn("font-bold text-sm", lc.text)}>{member.current_load}%</span>
+                <span className="font-medium text-neutral-600 dark:text-neutral-400">Carga calculada</span>
+                <span className={cn("font-bold text-sm", lc.text)}>{effectiveLoad}%</span>
               </div>
-              <ProgressBar value={member.current_load} barClassName={lc.bar} />
+              <ProgressBar value={effectiveLoad} barClassName={lc.bar} />
+              <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                {activeCount} tickets activos · {activeHours}h pendientes
+              </p>
               {overloaded && (
                 <p className="flex items-center gap-1 text-[11px] text-red-500 dark:text-red-400">
                   <AlertCircle className="size-3" />
@@ -318,9 +354,9 @@ export default function DevDashboardPage() {
                   <div className="mt-1 rounded-xl border border-dashed border-neutral-200 p-3 dark:border-neutral-700">
                     <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-neutral-400">Proyección</p>
                     <p className="text-sm text-neutral-700 dark:text-neutral-300">
-                      {member.current_load > 80
+                      {effectiveLoad > 80
                         ? "⚠ Sobrecargado — alta probabilidad de demoras."
-                        : member.current_load > 60
+                        : effectiveLoad > 60
                         ? "Carga moderada — monitorear si se suman tickets."
                         : "Capacidad disponible — puede absorber más trabajo."}
                     </p>
@@ -331,76 +367,58 @@ export default function DevDashboardPage() {
           </Card>
         </div>
 
-        {/* ── Tickets por proyecto ── */}
+        {/* ── Kanban del trabajador ── */}
         <section>
-          <h2 className="mb-4 text-sm font-semibold text-neutral-900 dark:text-neutral-100">
-            Tickets por proyecto
-          </h2>
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+              Kanban de {member.name}
+            </h2>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={requirements.length === 0}
+              onClick={() => { setCreateDefaultStatus("todo"); setCreateOpen(true); }}
+            >
+              <Plus className="size-4" />
+              Agregar ticket
+            </Button>
+          </div>
 
-          {byRequirement.length === 0 ? (
+          {myTickets.length === 0 ? (
             <EmptyState
               icon={<Layers className="size-5" />}
               title="Sin tickets asignados"
-              description="Cuando se procese una reunión y el Assignment Agent asigne tickets a este developer, aparecerán acá."
+              description="Cuando se procese una reunión o agregues un ticket manual, aparecerán acá."
             />
           ) : (
-            <div className="space-y-5">
-              {byRequirement.map(({ requirement, tickets: reqTickets }) => (
-                <Card key={requirement?.id ?? "unknown"} className="overflow-hidden p-0">
-                  {/* Cabecera del proyecto */}
-                  <div className="flex items-center justify-between border-b border-neutral-100 bg-neutral-50/60 px-4 py-3 dark:border-neutral-800 dark:bg-neutral-800/40">
-                    <div className="flex items-center gap-2.5">
-                      <p className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
-                        {requirement?.title ?? "Reunión desconocida"}
-                      </p>
-                      {requirement && <RequirementStatusBadge status={requirement.status} />}
-                    </div>
-                    {requirement && (
-                      <Link
-                        href={`/reuniones/${requirement.id}`}
-                        className="flex items-center gap-1 text-xs text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200"
-                      >
-                        Ver board <ChevronRight className="size-3" />
-                      </Link>
-                    )}
-                  </div>
-
-                  {/* Lista de tickets */}
-                  <div className="divide-y divide-neutral-100 dark:divide-neutral-800">
-                    {reqTickets.map((ticket) => (
-                      <div key={ticket.id} className="flex items-center gap-3 px-4 py-3 hover:bg-neutral-50/60 dark:hover:bg-neutral-800/30">
-                        <span className={cn("size-2 shrink-0 rounded-full", STATUS_COLORS[ticket.status])} />
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm text-neutral-800 dark:text-neutral-200">{ticket.title}</p>
-                          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-neutral-400 dark:text-neutral-500">
-                            <span className="flex items-center gap-1">
-                              <Clock className="size-3" /> {ticket.estimate_hours}h
-                            </span>
-                            <span>{SKILL_LABELS[ticket.required_skill]}</span>
-                          </div>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-2">
-                          <PriorityBadge priority={ticket.priority} />
-                          {ticket.risk_pct > 0 && <RiskBadge pct={ticket.risk_pct} />}
-                          <Badge className={STATUS_BG[ticket.status]}>
-                            {STATUS_LABELS[ticket.status]}
-                          </Badge>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  {/* Pie resumen del proyecto */}
-                  <div className="flex items-center justify-between border-t border-neutral-100 bg-neutral-50/40 px-4 py-2 text-xs text-neutral-500 dark:border-neutral-800 dark:bg-neutral-800/20 dark:text-neutral-400">
-                    <span>{reqTickets.length} tickets · {reqTickets.reduce((a, t) => a + t.estimate_hours, 0)}h estimadas</span>
-                    <span>{reqTickets.filter((t) => t.status === "done").length} completados</span>
-                  </div>
-                </Card>
-              ))}
-            </div>
+            <KanbanBoard
+              tickets={myTickets}
+              members={members}
+              onOpenTicket={setSelectedTicket}
+              onMove={handleMove}
+              onAddTicket={(status) => { setCreateDefaultStatus(status); setCreateOpen(true); }}
+            />
           )}
         </section>
       </div>
+
+      <TicketDetailSheet
+        ticket={selected}
+        members={members}
+        onClose={() => setSelectedTicket(null)}
+        onUpdate={handleUpdate}
+      />
+
+      <CreateTicketDialog
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        onSubmit={handleCreateTicket}
+        requirements={myRequirements.length > 0 ? myRequirements : requirements}
+        members={members}
+        defaultRequirementId={myRequirements[0]?.id ?? requirements[0]?.id}
+        defaultStatus={createDefaultStatus}
+        defaultAssigneeId={params.id}
+      />
     </div>
   );
 }

@@ -5,6 +5,7 @@ import { persist } from "zustand/middleware";
 import { SEED_MEMBERS, SEED_AGENT_LOGS, buildSeedData } from "./mock-data";
 import type {
   Member,
+  Project,
   Requirement,
   Ticket,
   AgentLog,
@@ -15,6 +16,7 @@ import type {
 
 interface AppState {
   members: Member[];
+  projects: Project[];
   requirements: Requirement[];
   tickets: Ticket[];
   agentLogs: AgentLog[];
@@ -22,7 +24,11 @@ interface AppState {
 
   setHydrated: () => void;
   setMembers: (members: Member[]) => void;
-  createRequirement: (title: string, transcript: string, backendId?: string) => string;
+  setWorkspace: (data: { members?: Member[]; projects?: Project[]; requirements?: Requirement[]; tickets?: Ticket[] }) => void;
+  addTicket: (ticket: Ticket) => void;
+  createRequirement: (title: string, transcript: string, backendId?: string, projectId?: string) => string;
+  ticketsForProject: (projectId: string) => Ticket[];
+  ticketsForMember: (memberId: string) => Ticket[];
   setTranscript: (requirementId: string, transcript: string) => void;
   renameRequirement: (requirementId: string, title: string) => void;
   applyMeetingOutput: (requirementId: string, output: MeetingAgentOutput) => void;
@@ -49,6 +55,7 @@ export const useAppStore = create<AppState>()(
   persist(
     (set, get) => ({
       members: SEED_MEMBERS,
+      projects: [],
       requirements: seed.requirements,
       tickets: seed.tickets,
       agentLogs: SEED_AGENT_LOGS,
@@ -58,10 +65,20 @@ export const useAppStore = create<AppState>()(
 
       setMembers: (members) => set({ members }),
 
-      createRequirement: (title, transcript, backendId) => {
+      setWorkspace: (data) => set((s) => ({
+        members: data.members ?? s.members,
+        projects: data.projects ?? s.projects,
+        requirements: data.requirements ?? s.requirements,
+        tickets: data.tickets ?? s.tickets,
+      })),
+
+      addTicket: (ticket) => set((s) => ({ tickets: [ticket, ...s.tickets.filter((t) => t.id !== ticket.id)] })),
+
+      createRequirement: (title, transcript, backendId, projectId) => {
         const id = backendId ?? uid("req");
         const requirement: Requirement = {
           id,
+          project_id: projectId,
           title: title.trim() || "Reunión sin título",
           raw_transcript: transcript,
           summary: "",
@@ -72,6 +89,12 @@ export const useAppStore = create<AppState>()(
         set((s) => ({ requirements: [requirement, ...s.requirements] }));
         return id;
       },
+
+      ticketsForProject: (projectId) =>
+        get().tickets.filter((t) => t.project_id === projectId),
+
+      ticketsForMember: (memberId) =>
+        get().tickets.filter((t) => t.assignee_id === memberId),
 
       setTranscript: (requirementId, transcript) => {
         set((s) => ({
@@ -89,9 +112,11 @@ export const useAppStore = create<AppState>()(
 
       applyMeetingOutput: (requirementId, output) => {
         set((s) => {
+          const req = s.requirements.find((r) => r.id === requirementId);
           const newTickets: Ticket[] = output.tickets.map((t, idx) => ({
             id: uid(`${requirementId}-t${idx}`),
             requirement_id: requirementId,
+            project_id: req?.project_id,
             title: t.title,
             description: t.description,
             priority: t.priority,
@@ -174,6 +199,7 @@ export const useAppStore = create<AppState>()(
       partialize: (state) => ({
         members: state.members,
         requirements: state.requirements,
+        projects: state.projects,
         tickets: state.tickets,
         agentLogs: state.agentLogs,
       }),

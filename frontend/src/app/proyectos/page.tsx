@@ -61,6 +61,73 @@ function MultiBar({ tickets }: { tickets: Ticket[] }) {
   );
 }
 
+/* ─── Tarjeta de proyecto real (Supabase) ─────────────────────────────────── */
+function RealProjectCard({
+  project,
+  requirements,
+  tickets,
+}: {
+  project: import("@/lib/types").Project;
+  requirements: Requirement[];
+  tickets: Ticket[];
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const done = tickets.filter((t) => t.status === "done").length;
+  const pct = tickets.length > 0 ? Math.round((done / tickets.length) * 100) : 0;
+  const highRisk = tickets.filter((t) => t.risk_pct > 70);
+
+  return (
+    <Card className="overflow-hidden p-0">
+      <div className="flex w-full items-start gap-4 p-5">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <Link href={`/proyectos/${project.id}`} className="text-sm font-semibold text-neutral-900 hover:underline dark:text-neutral-100">
+              {project.name}
+            </Link>
+            {project.status && (
+              <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-medium text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400">
+                {project.status}
+              </span>
+            )}
+            {highRisk.length > 0 && (
+              <span className="flex items-center gap-1 rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-600 dark:bg-red-950 dark:text-red-400">
+                <TriangleAlert className="size-3" /> {highRisk.length} en riesgo
+              </span>
+            )}
+          </div>
+          <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+            {requirements.length} reunión{requirements.length !== 1 ? "es" : ""} · {tickets.length} tickets · {pct}% completado
+          </p>
+          <div className="mt-3">
+            <MultiBar tickets={tickets} />
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <Link
+            href={`/reuniones/nueva?project_id=${project.id}`}
+            className="rounded-lg px-2 py-1 text-xs font-medium text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 dark:hover:bg-neutral-800"
+          >
+            + Reunión
+          </Link>
+          <button onClick={() => setExpanded((v) => !v)} className="rounded-lg p-1.5 text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800">
+            {expanded ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
+          </button>
+        </div>
+      </div>
+      {expanded && requirements.length > 0 && (
+        <div className="border-t border-neutral-100 px-5 py-3 dark:border-neutral-800">
+          {requirements.slice(0, 5).map((req) => (
+            <Link key={req.id} href={`/reuniones/${req.id}`} className="flex items-center justify-between py-2 text-sm text-neutral-600 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-200">
+              <span className="truncate">{req.title}</span>
+              <RequirementStatusBadge status={req.status} />
+            </Link>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 /* ─── Tarjeta de proyecto ────────────────────────────────────────────────── */
 function ProjectCard({
   requirement,
@@ -222,18 +289,22 @@ function ProjectCard({
 }
 
 /* ─── Vista cruzada: developer → proyectos ──────────────────────────────── */
-function TeamCrossView({ members, tickets, requirements }: {
+function TeamCrossView({ members, tickets, requirements, projects }: {
   members: Member[];
   tickets: Ticket[];
   requirements: Requirement[];
+  projects: import("@/lib/types").Project[];
 }) {
   return (
     <div className="space-y-3">
       {members.map((m) => {
         const myTickets = tickets.filter((t) => t.assignee_id === m.id);
-        const projectIds = [...new Set(myTickets.map((t) => t.requirement_id))];
+        const projectIds = [...new Set(myTickets.map((t) => t.project_id).filter(Boolean) as string[])];
         const active = myTickets.filter((t) => t.status === "in_progress").length;
         const lc = loadColorClasses(m.current_load);
+        const loadLabel = m.active_hours != null
+          ? `${m.current_load}% · ${m.active_hours}h activas`
+          : `${m.current_load}%`;
 
         return (
           <Link key={m.id} href={`/equipo/${m.id}`}>
@@ -251,30 +322,28 @@ function TeamCrossView({ members, tickets, requirements }: {
                   )}
                 </div>
 
-                {/* Proyectos del developer */}
                 <div className="mt-1.5 flex flex-wrap gap-1.5">
                   {projectIds.length === 0 ? (
                     <span className="text-xs text-neutral-400 dark:text-neutral-600">Sin proyectos asignados — disponible</span>
                   ) : (
-                    projectIds.map((rid) => {
-                      const req = requirements.find((r) => r.id === rid);
-                      const n = myTickets.filter((t) => t.requirement_id === rid).length;
-                      return req ? (
-                        <span key={rid} className="flex items-center gap-1 rounded-full border border-neutral-200 bg-neutral-50 px-2.5 py-0.5 text-[11px] text-neutral-600 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
-                          {req.title.split("—")[0].trim().slice(0, 22)}
+                    projectIds.map((pid) => {
+                      const proj = projects.find((p) => p.id === pid);
+                      const n = myTickets.filter((t) => t.project_id === pid).length;
+                      return (
+                        <span key={pid} className="flex items-center gap-1 rounded-full border border-neutral-200 bg-neutral-50 px-2.5 py-0.5 text-[11px] text-neutral-600 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
+                          {(proj?.name ?? "Proyecto").slice(0, 22)}
                           <span className="font-semibold text-neutral-900 dark:text-neutral-100">·{n}</span>
                         </span>
-                      ) : null;
+                      );
                     })
                   )}
                 </div>
               </div>
 
-              {/* Carga */}
-              <div className="hidden w-28 shrink-0 sm:block">
+              <div className="hidden w-32 shrink-0 sm:block">
                 <div className="mb-1 flex justify-between text-xs">
                   <span className="text-neutral-400 dark:text-neutral-500">Carga</span>
-                  <span className={cn("font-semibold", lc.text)}>{m.current_load}%</span>
+                  <span className={cn("font-semibold", lc.text)}>{loadLabel}</span>
                 </div>
                 <ProgressBar value={m.current_load} barClassName={lc.bar} />
               </div>
@@ -294,11 +363,22 @@ function TeamCrossView({ members, tickets, requirements }: {
 /* ─── Página principal ───────────────────────────────────────────────────── */
 export default function ProyectosPage() {
   const hydrated = useAppStore((s) => s.hydrated);
+  const projects = useAppStore((s) => s.projects);
   const requirements = useAppStore((s) => s.requirements);
   const tickets = useAppStore((s) => s.tickets);
   const members = useAppStore((s) => s.members);
 
   const [view, setView] = useState<"projects" | "team">("projects");
+
+  const sortedProjects = useMemo(
+    () => [...projects].sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? "")),
+    [projects]
+  );
+
+  const sortedRequirements = useMemo(
+    () => [...requirements].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()),
+    [requirements]
+  );
 
   const stats = useMemo(() => {
     if (!hydrated) return null;
@@ -307,13 +387,9 @@ export default function ProyectosPage() {
     const inProgress = tickets.filter((t) => t.status === "in_progress").length;
     const highRisk = tickets.filter((t) => t.risk_pct > 70).length;
     const pct = totalTickets > 0 ? Math.round((done / totalTickets) * 100) : 0;
-    return { totalTickets, done, inProgress, highRisk, pct };
-  }, [hydrated, tickets]);
-
-  const sorted = useMemo(
-    () => [...requirements].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()),
-    [requirements]
-  );
+    const projectCount = projects.length > 0 ? projects.length : requirements.length;
+    return { totalTickets, done, inProgress, highRisk, pct, projectCount };
+  }, [hydrated, tickets, projects.length, requirements.length]);
 
   if (!hydrated) {
     return (
@@ -338,7 +414,7 @@ export default function ProyectosPage() {
         {/* ── Resumen global ── */}
         <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
           {[
-            { label: "Proyectos", value: requirements.length, icon: Layers, sub: `${sorted.filter(r => r.status === "approved").length} aprobados`, tone: "neutral" },
+            { label: "Proyectos", value: stats!.projectCount, icon: Layers, sub: `${sortedRequirements.filter(r => r.status === "approved").length} reuniones aprobadas`, tone: "neutral" },
             { label: "Progreso global", value: `${stats!.pct}%`, icon: TrendingUp, sub: `${stats!.done}/${stats!.totalTickets} tickets`, tone: stats!.pct > 60 ? "emerald" : "amber" },
             { label: "En progreso", value: stats!.inProgress, icon: CheckCircle2, sub: "tickets activos", tone: "sky" },
             { label: "Riesgo alto", value: stats!.highRisk, icon: TriangleAlert, sub: "tickets >70%", tone: stats!.highRisk > 0 ? "red" : "emerald" },
@@ -386,14 +462,23 @@ export default function ProyectosPage() {
         {/* ── Vista proyectos ── */}
         {view === "projects" && (
           <section className="space-y-5">
-            {sorted.length === 0 ? (
+            {sortedProjects.length > 0 ? (
+              sortedProjects.map((project) => (
+                <RealProjectCard
+                  key={project.id}
+                  project={project}
+                  requirements={requirements.filter((r) => r.project_id === project.id)}
+                  tickets={tickets.filter((t) => t.project_id === project.id)}
+                />
+              ))
+            ) : sortedRequirements.length === 0 ? (
               <EmptyState
                 icon={<Layers className="size-5" />}
                 title="Sin proyectos todavía"
                 description="Procesá una reunión y aquí verás el estado completo de cada proyecto."
               />
             ) : (
-              sorted.map((req) => (
+              sortedRequirements.map((req) => (
                 <ProjectCard
                   key={req.id}
                   requirement={req}
@@ -405,7 +490,6 @@ export default function ProyectosPage() {
           </section>
         )}
 
-        {/* ── Vista equipo cruzado ── */}
         {view === "team" && (
           <section>
             <div className="mb-4">
@@ -414,7 +498,7 @@ export default function ProyectosPage() {
                 Cuántos proyectos simultáneos tiene cada persona y en qué está trabajando ahora.
               </p>
             </div>
-            <TeamCrossView members={members} tickets={tickets} requirements={requirements} />
+            <TeamCrossView members={members} tickets={tickets} requirements={requirements} projects={projects} />
           </section>
         )}
       </div>

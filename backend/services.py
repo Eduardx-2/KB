@@ -22,19 +22,20 @@ except ImportError:  # Permite `uvicorn main:app` desde backend/.
 logger = logging.getLogger("app.services")
 
 MEETING_SYSTEM_PROMPT = (
-    "Eres un analista de requerimientos. Del transcript en español extrae: "
-    "(1) resumen de 2-3 frases, (2) tickets accionables. "
-    "Cada ticket: título corto, descripción de 1-2 frases, priority, "
-    "estimate_hours (entero realista) y required_skill. "
-    "No inventes tickets que no estén en el transcript."
+    "Eres un Product Manager técnico senior. Del transcript en español extrae: "
+    "(1) resumen de 2-3 frases, (2) tickets accionables y GRANULARES. "
+    "No generes tickets genéricos como 'hacer landing'. Divide cada feature en fases ejecutables: "
+    "descubrimiento/mapeo, Figma/UX, diseño visual, frontend, backend/API, base de datos/inventario, QA, deploy. "
+    "Cada ticket debe tener título corto, descripción concreta, priority, estimate_hours realista y required_skill. "
+    "Si recibes tickets existentes en el contexto, evita duplicarlos; crea solo trabajo nuevo o complementario."
 )
 
 ASSIGNMENT_SYSTEM_PROMPT = (
-    "Eres un PM técnico. Recibes tickets y miembros con skills y current_load (0-100). "
-    "Asigna cada ticket al miembro cuya skill coincida con required_skill. "
-    "Si su current_load > 70, sube risk_pct proporcionalmente. "
+    "Eres un PM técnico. Recibes tickets y miembros con skills y effective_load (0-100), "
+    "que ya considera tickets activos y horas pendientes. Asigna cada ticket al miembro cuya skill coincida "
+    "con required_skill y que tenga menor carga efectiva. Si su effective_load > 70, sube risk_pct proporcionalmente. "
     "Si nadie tiene la skill, asigna al de menor carga con risk_pct >= 70. "
-    "reasoning: máximo 1 frase."
+    "No sobrecargues al mismo developer si hay otra persona viable. reasoning: máximo 1 frase."
 )
 
 
@@ -286,13 +287,27 @@ def log_agent(agent: str, latency_ms: int, ok: bool) -> None:
 
 # ---------- LLM: agentes con Structured Outputs ----------
 
-def run_meeting_agent(transcript: str) -> MeetingAgentOutput:
+def run_meeting_agent(transcript: str, existing_tickets: list[dict] | None = None) -> MeetingAgentOutput:
     """Transcript → MeetingAgentOutput. Schema garantizado por Structured Outputs.
 
     Seguridad: el transcript SIEMPRE viaja como mensaje `user`, nunca concatenado
     al system prompt (mitiga prompt injection accidental).
     """
     client = get_openai()
+    existing_ctx = [
+        {
+            "title": t.get("title"),
+            "status": t.get("status"),
+            "required_skill": t.get("required_skill") or t.get("skills", {}).get("code"),
+        }
+        for t in (existing_tickets or [])
+    ]
+    user_content = transcript
+    if existing_ctx:
+        user_content = (
+            f"TICKETS_EXISTENTES_DEL_PROYECTO (evita duplicar):\n{existing_ctx}\n\n"
+            f"TRANSCRIPT_NUEVO:\n{transcript}"
+        )
     start = time.perf_counter()
     ok = False
     try:
@@ -301,7 +316,7 @@ def run_meeting_agent(transcript: str) -> MeetingAgentOutput:
             temperature=0,
             messages=[
                 {"role": "system", "content": MEETING_SYSTEM_PROMPT},
-                {"role": "user", "content": transcript},
+                {"role": "user", "content": user_content},
             ],
             response_format=MeetingAgentOutput,
         )
@@ -333,6 +348,9 @@ def run_assignment_agent(tickets: list[dict], members: list[dict]) -> Assignment
             "role": m.get("role"),
             "skills": m.get("skills", []),
             "current_load": m.get("current_load", 0),
+            "effective_load": m.get("effective_load", m.get("current_load", 0)),
+            "active_ticket_count": m.get("active_ticket_count", 0),
+            "active_hours": m.get("active_hours", 0),
         }
         for m in members
     ]

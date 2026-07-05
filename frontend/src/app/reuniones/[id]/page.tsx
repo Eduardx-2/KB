@@ -1,9 +1,9 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams } from "next/navigation";
 import { toast } from "sonner";
-import { ArrowLeft, FileText, ShieldCheck, Sparkles } from "lucide-react";
+import { ArrowLeft, FileText, ShieldCheck, Sparkles, Plus } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
@@ -13,25 +13,29 @@ import { RequirementStatusBadge } from "@/components/requirements/status-badge";
 import { ApproveDialog } from "@/components/requirements/approve-dialog";
 import { KanbanBoard } from "@/components/tickets/kanban-board";
 import { TicketDetailSheet } from "@/components/tickets/ticket-detail-sheet";
+import { CreateTicketDialog } from "@/components/tickets/create-ticket-dialog";
 import { useAppStore } from "@/lib/store";
-import { approveRequirement as approveRequirementApi, patchTicket } from "@/lib/api";
+import { approveRequirement as approveRequirementApi, createTicket, fetchWorkspace, patchTicket } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/utils";
-import type { Ticket, TicketStatus } from "@/lib/types";
+import type { CreateTicketInput, Ticket, TicketStatus } from "@/lib/types";
 import Link from "next/link";
 
 export default function RequirementBoardPage() {
   const params = useParams<{ id: string }>();
-  const router = useRouter();
 
   const hydrated = useAppStore((s) => s.hydrated);
   const requirements = useAppStore((s) => s.requirements);
   const allTickets = useAppStore((s) => s.tickets);
   const members = useAppStore((s) => s.members);
   const updateTicket = useAppStore((s) => s.updateTicket);
+  const addTicket = useAppStore((s) => s.addTicket);
+  const setWorkspace = useAppStore((s) => s.setWorkspace);
   const approveRequirementInStore = useAppStore((s) => s.approveRequirement);
 
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null);
   const [approveOpen, setApproveOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createDefaultStatus, setCreateDefaultStatus] = useState<TicketStatus>("backlog");
   const [approving, setApproving] = useState(false);
   const [transcriptOpen, setTranscriptOpen] = useState(false);
 
@@ -110,6 +114,28 @@ export default function RequirementBoardPage() {
     }
   }
 
+  async function handleCreateTicket(input: CreateTicketInput) {
+    const { ticket, mode } = await createTicket({
+      ...input,
+      project_id: requirement?.project_id,
+    });
+    if (ticket) {
+      addTicket(ticket);
+      toast.success("Ticket creado");
+      if (mode === "live") {
+        const workspace = await fetchWorkspace();
+        if (workspace.mode === "live") setWorkspace(workspace);
+      }
+    } else {
+      toast.error("No se pudo crear el ticket");
+    }
+  }
+
+  function openCreateTicket(status: TicketStatus) {
+    setCreateDefaultStatus(status);
+    setCreateOpen(true);
+  }
+
   const isExtracted = requirement.status !== "draft";
   const isApproved = requirement.status === "approved";
 
@@ -156,12 +182,21 @@ export default function RequirementBoardPage() {
             description="Volvé a procesarla desde 'Nueva reunión' para generar el resumen y los tickets."
           />
         ) : (
-          <KanbanBoard
-            tickets={tickets}
-            members={members}
-            onOpenTicket={setSelectedTicket}
-            onMove={handleMove}
-          />
+          <>
+            <div className="mb-4 flex justify-end">
+              <Button size="sm" variant="outline" onClick={() => openCreateTicket("backlog")}>
+                <Plus className="size-4" />
+                Agregar ticket
+              </Button>
+            </div>
+            <KanbanBoard
+              tickets={tickets}
+              members={members}
+              onOpenTicket={setSelectedTicket}
+              onMove={handleMove}
+              onAddTicket={openCreateTicket}
+            />
+          </>
         )}
       </div>
 
@@ -178,6 +213,16 @@ export default function RequirementBoardPage() {
         onConfirm={handleApprove}
         loading={approving}
         assignees={assignees}
+      />
+
+      <CreateTicketDialog
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        onSubmit={handleCreateTicket}
+        requirements={requirement ? [requirement] : []}
+        members={members}
+        defaultRequirementId={requirement?.id}
+        defaultStatus={createDefaultStatus}
       />
 
       <Dialog open={transcriptOpen} onClose={() => setTranscriptOpen(false)} className="max-w-2xl">

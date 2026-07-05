@@ -19,10 +19,28 @@ export interface Member {
   current_load: number; // 0-100
   team_id: string;
   is_manager?: boolean; // presente cuando los miembros vienen del backend real
+  active_hours?: number;
+  active_ticket_count?: number;
+  effective_load?: number;
+}
+
+export interface Project {
+  id: string;
+  team_id: string;
+  code?: string | null;
+  name: string;
+  description?: string | null;
+  business_area?: string | null;
+  status?: string | null;
+  owner_id?: string | null;
+  target_date?: string | null;
+  created_at?: string | null;
 }
 
 export interface Requirement {
   id: string;
+  project_id?: string;
+  meeting_id?: string | null;
   title: string;
   raw_transcript: string;
   summary: string;
@@ -34,6 +52,8 @@ export interface Requirement {
 export interface Ticket {
   id: string;
   requirement_id: string;
+  project_id?: string;
+  project_name?: string;
   title: string;
   description: string;
   priority: Priority;
@@ -45,6 +65,27 @@ export interface Ticket {
   status: TicketStatus;
   deadline: string | null;
   team_id: string;
+}
+
+export interface TicketComment {
+  id: string;
+  ticket_id: string;
+  body: string;
+  author_id?: string | null;
+  created_at?: string | null;
+}
+
+export interface CreateTicketInput {
+  requirement_id: string;
+  project_id?: string;
+  title: string;
+  description?: string;
+  priority: Priority;
+  estimate_hours: number;
+  required_skill: Skill;
+  status: TicketStatus;
+  assignee_id?: string | null;
+  deadline?: string | null;
 }
 
 export interface AgentLog {

@@ -40,6 +40,7 @@ class TranscribeResponse(BaseModel):
 class MeetingAgentRequest(BaseModel):
     transcript: str
     requirement_id: str
+    project_id: Optional[str] = None
 
 
 class AssignmentAgentRequest(BaseModel):
@@ -63,6 +64,55 @@ class TicketPatch(BaseModel):
     status: Optional[Literal["backlog", "todo", "in_progress", "done"]] = None
     assignee_id: Optional[str] = None
     deadline: Optional[str] = None  # ISO date "YYYY-MM-DD"
+
+
+class CreateTicketRequest(BaseModel):
+    requirement_id: str
+    project_id: Optional[str] = None
+    title: str
+    description: Optional[str] = None
+    priority: Literal["low", "medium", "high"] = "medium"
+    estimate_hours: int = Field(default=4, gt=0)
+    required_skill: Literal["frontend", "backend", "data", "qa", "devops"] = "frontend"
+    status: Literal["backlog", "todo", "in_progress", "done"] = "backlog"
+    assignee_id: Optional[str] = None
+    deadline: Optional[str] = None
+
+
+class TicketCommentRequest(BaseModel):
+    body: str
+    author_id: Optional[str] = None
+
+
+class TicketCommentResponse(BaseModel):
+    id: str
+    ticket_id: str
+    body: str
+    author_id: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class TicketOut(BaseModel):
+    id: str
+    requirement_id: str
+    project_id: Optional[str] = None
+    title: str
+    description: Optional[str] = None
+    priority: Optional[str] = None
+    estimate_hours: Optional[int] = None
+    required_skill: Optional[str] = None
+    risk_pct: Optional[int] = None
+    assignee_id: Optional[str] = None
+    status: Optional[str] = None
+    deadline: Optional[str] = None
+    assignment_reasoning: Optional[str] = None
+
+
+class ProjectWorkResponse(BaseModel):
+    project: dict
+    requirements: list[dict]
+    meetings: list[dict]
+    tickets: list[dict]
 
 
 class ApproveResponse(BaseModel):

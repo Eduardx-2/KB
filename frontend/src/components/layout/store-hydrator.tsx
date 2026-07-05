@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { useAppStore } from "@/lib/store";
-import { fetchMembers, HAS_LIVE_BACKEND } from "@/lib/api";
+import { fetchWorkspace, HAS_LIVE_BACKEND } from "@/lib/api";
 
 /**
  * Hidrata el store de Zustand y, si hay backend real configurado,
@@ -20,9 +20,9 @@ export function StoreHydrator() {
 
     // Sincronizar miembros desde backend cuando está disponible
     if (HAS_LIVE_BACKEND) {
-      fetchMembers().then(({ members, mode }) => {
-        if (mode === "live" && members.length > 0) {
-          useAppStore.getState().setMembers(members);
+      fetchWorkspace().then(({ members, projects, requirements, tickets, mode }) => {
+        if (mode === "live") {
+          useAppStore.getState().setWorkspace({ members, projects, requirements, tickets });
         }
       }).catch(() => {
         // silencioso — el store sigue con sus datos locales

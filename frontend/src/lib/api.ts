@@ -1,7 +1,19 @@
 import { useAppStore } from "./store";
 import { simulateAssignmentAgent, simulateMeetingAgent } from "./mock-engine";
 import { sleep } from "./utils";
-import type { AssignmentAgentOutput, ErrorLog, HealthState, MeetingAgentOutput, Member, RunMode } from "./types";
+import type {
+  AssignmentAgentOutput,
+  CreateTicketInput,
+  ErrorLog,
+  HealthState,
+  MeetingAgentOutput,
+  Member,
+  Project,
+  Requirement,
+  RunMode,
+  Ticket,
+  TicketComment,
+} from "./types";
 
 /**
  * Capa de acceso a datos. Sigue la regla del CONTRATO: el frontend nunca
@@ -24,6 +36,55 @@ async function fetchWithTimeout(input: string, init: RequestInit = {}, timeoutMs
   } finally {
     clearTimeout(timer);
   }
+}
+
+function normalizeMember(raw: Record<string, unknown>): Member {
+  return {
+    id: String(raw.id),
+    name: String(raw.name ?? "Sin nombre"),
+    role: String(raw.role ?? ""),
+    skills: (Array.isArray(raw.skills) ? raw.skills : []) as Member["skills"],
+    current_load: Number(raw.current_load ?? raw.effective_load ?? 0),
+    team_id: String(raw.team_id ?? "live"),
+    is_manager: Boolean(raw.is_manager),
+    active_hours: raw.active_hours != null ? Number(raw.active_hours) : undefined,
+    active_ticket_count: raw.active_ticket_count != null ? Number(raw.active_ticket_count) : undefined,
+    effective_load: raw.effective_load != null ? Number(raw.effective_load) : undefined,
+  };
+}
+
+function normalizeTicket(raw: Record<string, unknown>): Ticket {
+  return {
+    id: String(raw.id),
+    requirement_id: String(raw.requirement_id),
+    project_id: raw.project_id ? String(raw.project_id) : undefined,
+    project_name: raw.project_name ? String(raw.project_name) : undefined,
+    title: String(raw.title ?? "Ticket sin título"),
+    description: String(raw.description ?? ""),
+    priority: (raw.priority as Ticket["priority"]) ?? "medium",
+    estimate_hours: Number(raw.estimate_hours ?? 4),
+    required_skill: (raw.required_skill as Ticket["required_skill"]) ?? "frontend",
+    risk_pct: Number(raw.risk_pct ?? 0),
+    reasoning: (raw.assignment_reasoning as string | undefined) ?? (raw.reasoning as string | undefined),
+    assignee_id: raw.assignee_id ? String(raw.assignee_id) : null,
+    status: (raw.status as Ticket["status"]) ?? "backlog",
+    deadline: raw.deadline ? String(raw.deadline) : null,
+    team_id: "live",
+  };
+}
+
+function normalizeRequirement(raw: Record<string, unknown>): Requirement {
+  return {
+    id: String(raw.id),
+    project_id: raw.project_id ? String(raw.project_id) : undefined,
+    meeting_id: raw.meeting_id ? String(raw.meeting_id) : null,
+    title: String(raw.title ?? "Reunión sin título"),
+    raw_transcript: String(raw.raw_transcript ?? ""),
+    summary: String(raw.summary ?? ""),
+    status: (raw.status as Requirement["status"]) ?? "draft",
+    created_at: String(raw.created_at ?? new Date().toISOString()),
+    team_id: "live",
+  };
 }
 
 export async function checkHealth(): Promise<HealthState> {
@@ -79,7 +140,8 @@ export async function transcribeAudio(file: Blob): Promise<{ text: string; mode:
 
 export async function runMeetingAgent(
   transcript: string,
-  requirementId: string
+  requirementId: string,
+  projectId?: string
 ): Promise<{ output: MeetingAgentOutput; mode: RunMode }> {
   const start = performance.now();
   if (HAS_LIVE_BACKEND) {
@@ -89,7 +151,7 @@ export async function runMeetingAgent(
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ transcript, requirement_id: requirementId }),
+          body: JSON.stringify({ transcript, requirement_id: requirementId, project_id: projectId }),
         },
         15000
       );
@@ -232,21 +294,42 @@ export async function fetchMembers(): Promise<{ members: Member[]; mode: RunMode
         id: string; name: string; role: string; email?: string;
         current_load: number; is_manager: boolean; skills: string[];
       }> = await res.json();
-      const members: Member[] = raw.map((m) => ({
-        id: m.id,
-        name: m.name,
-        role: m.role,
-        email: m.email,
-        skills: (m.skills ?? []) as Member["skills"],
-        current_load: m.current_load,
-        team_id: "live",
-      }));
+      const members: Member[] = raw.map((m) =>
+        normalizeMember(m as unknown as Record<string, unknown>)
+      );
       return { members, mode: "live" };
     } catch {
       // sigue a mock
     }
   }
   return { members: [], mode: "mock" };
+}
+
+/** Snapshot completo para que el frontend use Supabase como fuente real. */
+export async function fetchWorkspace(): Promise<{
+  members: Member[];
+  projects: Project[];
+  requirements: Requirement[];
+  tickets: Ticket[];
+  mode: RunMode;
+}> {
+  if (HAS_LIVE_BACKEND) {
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/api/workspace`, {}, 12000);
+      if (!res.ok) throw new Error(String(res.status));
+      const data = await res.json();
+      return {
+        members: (data.members ?? []).map(normalizeMember),
+        projects: (data.projects ?? []) as Project[],
+        requirements: (data.requirements ?? []).map(normalizeRequirement),
+        tickets: (data.tickets ?? []).map(normalizeTicket),
+        mode: "live",
+      };
+    } catch {
+      // cae a mock
+    }
+  }
+  return { members: [], projects: [], requirements: [], tickets: [], mode: "mock" };
 }
 
 /** Carga proyectos disponibles desde el backend. */
@@ -262,6 +345,83 @@ export async function fetchProjects(): Promise<{ projects: Array<{ id: string; n
     }
   }
   return { projects: [], mode: "mock" };
+}
+
+export async function fetchProjectWork(projectId: string): Promise<{
+  project: Project | null;
+  requirements: Requirement[];
+  tickets: Ticket[];
+  meetings: Array<Record<string, unknown>>;
+  mode: RunMode;
+}> {
+  if (HAS_LIVE_BACKEND) {
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/api/projects/${projectId}/work`, {}, 10000);
+      if (!res.ok) throw new Error(String(res.status));
+      const data = await res.json();
+      return {
+        project: data.project ?? null,
+        requirements: (data.requirements ?? []).map(normalizeRequirement),
+        tickets: (data.tickets ?? []).map(normalizeTicket),
+        meetings: data.meetings ?? [],
+        mode: "live",
+      };
+    } catch {
+      // cae a mock
+    }
+  }
+  return { project: null, requirements: [], tickets: [], meetings: [], mode: "mock" };
+}
+
+export async function createTicket(input: CreateTicketInput): Promise<{ ticket: Ticket | null; mode: RunMode }> {
+  if (HAS_LIVE_BACKEND) {
+    try {
+      const res = await fetchWithTimeout(
+        `${API_BASE}/api/tickets`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(input),
+        },
+        10000
+      );
+      if (!res.ok) throw new Error(String(res.status));
+      return { ticket: normalizeTicket(await res.json()), mode: "live" };
+    } catch {
+      // cae a mock
+    }
+  }
+  return { ticket: null, mode: "mock" };
+}
+
+export async function fetchTicketComments(ticketId: string): Promise<TicketComment[]> {
+  if (!HAS_LIVE_BACKEND) return [];
+  try {
+    const res = await fetchWithTimeout(`${API_BASE}/api/tickets/${ticketId}/comments`, {}, 8000);
+    if (!res.ok) throw new Error(String(res.status));
+    return (await res.json()) as TicketComment[];
+  } catch {
+    return [];
+  }
+}
+
+export async function createTicketComment(ticketId: string, body: string, authorId?: string | null): Promise<TicketComment | null> {
+  if (!HAS_LIVE_BACKEND) return null;
+  try {
+    const res = await fetchWithTimeout(
+      `${API_BASE}/api/tickets/${ticketId}/comments`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body, author_id: authorId }),
+      },
+      8000
+    );
+    if (!res.ok) throw new Error(String(res.status));
+    return (await res.json()) as TicketComment;
+  } catch {
+    return null;
+  }
 }
 
 /** Lee los últimos errores registrados en Supabase vía backend. */

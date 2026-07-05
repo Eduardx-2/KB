@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { FileText, Mic, Sparkles, Wand2 } from "lucide-react";
@@ -10,8 +10,8 @@ import { Button } from "@/components/ui/button";
 import { AudioRecorder } from "@/components/meeting/audio-recorder";
 import { PipelineSteps, type PipelineStep } from "@/components/meeting/pipeline-steps";
 import { useAppStore } from "@/lib/store";
-import { createRequirementInBackend, runAssignmentAgent, runMeetingAgent, transcribeAudio } from "@/lib/api";
-import { GOLDEN_TRANSCRIPT, REALISTIC_TRANSCRIPT } from "@/lib/mock-data";
+import { createRequirementInBackend, fetchWorkspace, runAssignmentAgent, runMeetingAgent, transcribeAudio } from "@/lib/api";
+import { GOLDEN_TRANSCRIPT, LANDING_ECOMMERCE_TRANSCRIPT, REALISTIC_TRANSCRIPT } from "@/lib/mock-data";
 import { cn } from "@/lib/utils";
 
 type Source = "text" | "audio";
@@ -33,11 +33,14 @@ export default function NuevaReunionPage() {
   const renameRequirement = useAppStore((s) => s.renameRequirement);
   const applyMeetingOutput = useAppStore((s) => s.applyMeetingOutput);
   const applyAssignmentOutput = useAppStore((s) => s.applyAssignmentOutput);
+  const setWorkspace = useAppStore((s) => s.setWorkspace);
+  const projects = useAppStore((s) => s.projects);
 
   const [source, setSource] = useState<Source>("text");
   const [title, setTitle] = useState("");
   const [text, setText] = useState("");
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
+  const [projectId, setProjectId] = useState("");
   const [processing, setProcessing] = useState(false);
   const [steps, setSteps] = useState<PipelineStep[]>(TEXT_STEPS);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -46,6 +49,11 @@ export default function NuevaReunionPage() {
     if (processing) return false;
     return source === "text" ? text.trim().length > 20 : Boolean(audioBlob);
   }, [processing, source, text, audioBlob]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    setProjectId(params.get("project_id") ?? "");
+  }, []);
 
   function updateStep(id: string, status: PipelineStep["status"]) {
     setSteps((prev) => prev.map((s) => (s.id === id ? { ...s, status } : s)));
@@ -63,8 +71,8 @@ export default function NuevaReunionPage() {
       (source === "text" ? text : "Reunión grabada").slice(0, 60).replace(/\s+\S*$/, "") + "…";
 
     // Crear primero en el backend para obtener un UUID real de Supabase
-    const { id: backendId } = await createRequirementInBackend(autoTitle);
-    const requirementId = createRequirement(autoTitle, source === "text" ? text : "", backendId);
+    const { id: backendId } = await createRequirementInBackend(autoTitle, projectId || undefined);
+    const requirementId = createRequirement(autoTitle, source === "text" ? text : "", backendId, projectId || undefined);
 
     try {
       let transcript = text;
@@ -78,7 +86,7 @@ export default function NuevaReunionPage() {
       }
 
       updateStep("meeting", "active");
-      const { output: meetingOutput } = await runMeetingAgent(transcript, requirementId);
+      const { output: meetingOutput } = await runMeetingAgent(transcript, requirementId, projectId || undefined);
       applyMeetingOutput(requirementId, meetingOutput);
       if (!hasCustomTitle) {
         const shortTitle = meetingOutput.summary.split(/(?<=[.!?])\s/)[0]?.slice(0, 70) ?? autoTitle;
@@ -90,6 +98,11 @@ export default function NuevaReunionPage() {
       const { output: assignmentOutput } = await runAssignmentAgent(requirementId);
       applyAssignmentOutput(requirementId, assignmentOutput);
       updateStep("assignment", "done");
+
+      const workspace = await fetchWorkspace();
+      if (workspace.mode === "live") {
+        setWorkspace(workspace);
+      }
 
       toast.success("Plan de trabajo generado", {
         description: `${meetingOutput.tickets.length} tickets asignados al equipo.`,
@@ -125,6 +138,30 @@ export default function NuevaReunionPage() {
                 className="w-full rounded-lg border border-neutral-200 bg-white px-3.5 py-2.5 text-sm text-neutral-900 outline-none transition focus:border-neutral-400 focus:ring-4 focus:ring-neutral-100 disabled:bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100 dark:placeholder-neutral-500 dark:focus:border-neutral-500 dark:disabled:bg-neutral-900"
               />
             </div>
+
+            {projects.length > 0 && (
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-neutral-800 dark:text-neutral-200">
+                  Proyecto
+                </label>
+                <select
+                  value={projectId}
+                  onChange={(e) => setProjectId(e.target.value)}
+                  disabled={processing}
+                  className="w-full rounded-lg border border-neutral-200 bg-white px-3.5 py-2.5 text-sm text-neutral-900 outline-none transition focus:border-neutral-400 focus:ring-4 focus:ring-neutral-100 disabled:bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
+                >
+                  <option value="">Usar proyecto por defecto</option>
+                  {projects.map((project) => (
+                    <option key={project.id} value={project.id}>
+                      {project.name}
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-1 text-xs text-neutral-400">
+                  Las siguientes reuniones del mismo proyecto tomarán en cuenta tickets existentes para evitar duplicados.
+                </p>
+              </div>
+            )}
 
             <div className="flex gap-1 rounded-lg bg-neutral-100 p-1 dark:bg-neutral-800">
               <button
@@ -179,6 +216,13 @@ export default function NuevaReunionPage() {
                     className="rounded-full border border-neutral-200 px-3 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800"
                   >
                     Usar transcript realista (CRM)
+                  </button>
+                  <button
+                    onClick={() => setText(LANDING_ECOMMERCE_TRANSCRIPT)}
+                    disabled={processing}
+                    className="rounded-full border border-neutral-200 px-3 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800"
+                  >
+                    Landing e-commerce (granular)
                   </button>
                 </div>
               </div>

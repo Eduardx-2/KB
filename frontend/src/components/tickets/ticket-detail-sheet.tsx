@@ -1,12 +1,16 @@
 "use client";
 
-import { Clock, Calendar, TriangleAlert } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Clock, Calendar, TriangleAlert, MessageSquare, Send } from "lucide-react";
+import { toast } from "sonner";
 import { Sheet } from "@/components/ui/dialog";
 import { Avatar } from "@/components/ui/avatar";
+import { Button } from "@/components/ui/button";
 import { PriorityBadge } from "@/components/tickets/priority-badge";
 import { RiskBadge } from "@/components/tickets/risk-badge";
-import { STATUS_LABELS, SKILL_LABELS, riskColorClasses } from "@/lib/utils";
-import type { Member, Ticket, TicketStatus } from "@/lib/types";
+import { createTicketComment, fetchTicketComments } from "@/lib/api";
+import { STATUS_LABELS, SKILL_LABELS, riskColorClasses, formatRelativeTime } from "@/lib/utils";
+import type { Member, Ticket, TicketComment, TicketStatus } from "@/lib/types";
 
 const STATUS_OPTIONS: TicketStatus[] = ["backlog", "todo", "in_progress", "done"];
 
@@ -26,6 +30,40 @@ export function TicketDetailSheet({
 }) {
   const assignee = ticket ? members.find((m) => m.id === ticket.assignee_id) : undefined;
   const risk = ticket ? riskColorClasses(ticket.risk_pct) : null;
+
+  const [comments, setComments] = useState<TicketComment[]>([]);
+  const [commentText, setCommentText] = useState("");
+  const [loadingComments, setLoadingComments] = useState(false);
+  const [postingComment, setPostingComment] = useState(false);
+
+  useEffect(() => {
+    if (!ticket) {
+      setComments([]);
+      return;
+    }
+    setLoadingComments(true);
+    fetchTicketComments(ticket.id)
+      .then(setComments)
+      .finally(() => setLoadingComments(false));
+  }, [ticket?.id]);
+
+  async function handleAddComment() {
+    if (!ticket || !commentText.trim()) return;
+    setPostingComment(true);
+    try {
+      const manager = members.find((m) => m.is_manager);
+      const created = await createTicketComment(ticket.id, commentText.trim(), manager?.id);
+      if (created) {
+        setComments((prev) => [...prev, created]);
+        setCommentText("");
+        toast.success("Comentario agregado");
+      } else {
+        toast.error("No se pudo guardar el comentario");
+      }
+    } finally {
+      setPostingComment(false);
+    }
+  }
 
   return (
     <Sheet open={Boolean(ticket)} onClose={onClose}>
@@ -111,6 +149,63 @@ export function TicketDetailSheet({
                   className={`${inputCls} pl-9`}
                 />
               </div>
+            </div>
+          </div>
+
+          {/* Comentarios */}
+          <div className="mt-8 border-t border-neutral-100 pt-5 dark:border-neutral-800">
+            <div className="mb-3 flex items-center gap-2">
+              <MessageSquare className="size-4 text-neutral-400" />
+              <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Comentarios</h3>
+              <span className="text-xs text-neutral-400">({comments.length})</span>
+            </div>
+
+            {loadingComments ? (
+              <p className="text-sm text-neutral-400">Cargando comentarios…</p>
+            ) : comments.length === 0 ? (
+              <p className="text-sm text-neutral-400 dark:text-neutral-500">
+                Sin comentarios todavía. Agregá decisiones, bloqueos o seguimiento.
+              </p>
+            ) : (
+              <ul className="mb-4 space-y-3">
+                {comments.map((c) => {
+                  const author = members.find((m) => m.id === c.author_id);
+                  return (
+                    <li key={c.id} className="rounded-lg bg-neutral-50 p-3 dark:bg-neutral-900">
+                      <div className="mb-1 flex items-center gap-2 text-xs text-neutral-500">
+                        {author && <Avatar name={author.name} size="sm" />}
+                        <span className="font-medium text-neutral-700 dark:text-neutral-300">
+                          {author?.name ?? "Equipo"}
+                        </span>
+                        {c.created_at && (
+                          <span className="text-neutral-400">{formatRelativeTime(c.created_at)}</span>
+                        )}
+                      </div>
+                      <p className="text-sm text-neutral-700 dark:text-neutral-300">{c.body}</p>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+
+            <div className="flex gap-2">
+              <textarea
+                value={commentText}
+                onChange={(e) => setCommentText(e.target.value)}
+                rows={2}
+                placeholder="Escribí un comentario…"
+                className={`${inputCls} flex-1 resize-none`}
+                disabled={postingComment}
+              />
+              <Button
+                size="sm"
+                className="self-end"
+                onClick={handleAddComment}
+                loading={postingComment}
+                disabled={!commentText.trim()}
+              >
+                <Send className="size-4" />
+              </Button>
             </div>
           </div>
         </div>

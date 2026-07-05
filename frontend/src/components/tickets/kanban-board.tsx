@@ -12,11 +12,13 @@ export function KanbanBoard({
   members,
   onOpenTicket,
   onMove,
+  onAddTicket,
 }: {
   tickets: Ticket[];
   members: Member[];
   onOpenTicket: (ticket: Ticket) => void;
   onMove: (ticketId: string, status: TicketStatus) => void;
+  onAddTicket?: (status: TicketStatus) => void;
 }) {
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -44,6 +46,7 @@ export function KanbanBoard({
             tickets={tickets.filter((t) => t.status === status)}
             members={members}
             onOpenTicket={onOpenTicket}
+            onAddTicket={onAddTicket}
           />
         ))}
       </div>
