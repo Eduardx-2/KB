@@ -3,52 +3,82 @@
 Correr:  uvicorn main:app --reload
 Docs:    http://localhost:8000/docs
 """
+from __future__ import annotations
+
 import logging
+import re
+import secrets
 import traceback
 import uuid
-from llm_firewall import scan_prompt
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
+from datetime import datetime, timedelta, timezone
+from typing import Annotated
+
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from openai import OpenAIError
 
 try:
-    from . import services
+    from . import audit, billing, quotas, services, tenancy
+    from .auth import AuthContext, get_auth_context, require_role, require_team
     from .config import get_settings
+    from .llm_firewall import scan_prompt
+    from .rate_limit import RateLimitMiddleware
     from .schemas import (
         ApproveResponse,
         AssignmentAgentOutput,
         AssignmentAgentRequest,
+        AuthMeResponse,
         ClientErrorReport,
         CreateRequirementRequest,
         CreateRequirementResponse,
+        CreateTeamRequest,
         CreateTicketRequest,
         HealthResponse,
+        InviteAcceptRequest,
+        InviteRequest,
         MeetingAgentOutput,
         MeetingAgentRequest,
-        TicketPatch,
+        PlanOut,
+        TeamOut,
         TicketCommentRequest,
         TicketCommentResponse,
+        TicketPatch,
         TranscribeResponse,
+        UsageResponse,
     )
 except ImportError:  # Permite `uvicorn main:app` desde backend/.
+    import audit
+    import billing
+    import quotas
     import services
+    import tenancy
+    from auth import AuthContext, get_auth_context, require_role, require_team
     from config import get_settings
+    from llm_firewall import scan_prompt
+    from rate_limit import RateLimitMiddleware
     from schemas import (
         ApproveResponse,
         AssignmentAgentOutput,
         AssignmentAgentRequest,
+        AuthMeResponse,
         ClientErrorReport,
         CreateRequirementRequest,
         CreateRequirementResponse,
+        CreateTeamRequest,
         CreateTicketRequest,
         HealthResponse,
+        InviteAcceptRequest,
+        InviteRequest,
         MeetingAgentOutput,
         MeetingAgentRequest,
-        TicketPatch,
+        PlanOut,
+        TeamOut,
         TicketCommentRequest,
         TicketCommentResponse,
+        TicketPatch,
         TranscribeResponse,
+        UsageResponse,
     )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -56,16 +86,28 @@ logger = logging.getLogger("app")
 
 app = FastAPI(title="AI Meeting-to-Tickets PM", version=get_settings().APP_VERSION)
 
-# CORS abierto — es un hackathon. Exponemos X-Request-ID para correlacionar
-# errores del navegador con filas en error_logs.
+# ---------- CORS ----------
+_cors_raw = (get_settings().CORS_ORIGINS or "*").strip()
+_cors_origins = ["*"] if _cors_raw == "*" else [o.strip() for o in _cors_raw.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["X-Request-ID"],
+    expose_headers=["X-Request-ID", "Retry-After"],
 )
+
+app.add_middleware(RateLimitMiddleware)
+
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
 
 
 @app.middleware("http")
@@ -87,6 +129,7 @@ def _request_id(request: Request) -> str:
 def _error_response(request: Request, *, status: int, detail: str, exc: Exception, severity: str) -> JSONResponse:
     """Registra el error en error_logs y responde incluyendo el request_id."""
     request_id = _request_id(request)
+    team_id = request.headers.get("x-team-id")
     services.log_error(
         message=str(exc) or detail,
         source="backend",
@@ -98,6 +141,7 @@ def _error_response(request: Request, *, status: int, detail: str, exc: Exceptio
         stack=traceback.format_exc(),
         request_id=request_id,
         user_agent=request.headers.get("user-agent"),
+        team_id=team_id,
     )
     return JSONResponse(
         status_code=status,
@@ -130,7 +174,18 @@ async def global_error_handler(request: Request, exc: Exception):
 
 # ---------- Helpers de datos ----------
 
-def _get_requirement_or_404(requirement_id: str) -> dict:
+AuthDep = Annotated[AuthContext, Depends(get_auth_context)]
+TeamAuth = Annotated[AuthContext, Depends(require_team)]
+
+
+def _slugify(name: str) -> str:
+    base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "team"
+    return f"{base}-{secrets.token_hex(3)}"
+
+
+def _get_requirement_or_404(requirement_id: str, team_id: str | None = None) -> dict:
+    if team_id:
+        return tenancy.assert_team_owns_requirement(services.get_supabase(), team_id, requirement_id)
     res = (
         services.get_supabase()
         .table("requirements")
@@ -176,10 +231,15 @@ def _hydrate_tickets_with_skills(tickets: list[dict]) -> list[dict]:
 
 def _hydrate_members_with_skills(members: list[dict]) -> list[dict]:
     skill_codes_by_id = _get_skill_codes_by_id()
+    member_ids = [m["id"] for m in members]
+    if not member_ids:
+        return [{**m, "skills": []} for m in members]
+
     member_skills = (
         services.get_supabase()
         .table("member_skills")
         .select("member_id, skill_id")
+        .in_("member_id", member_ids)
         .execute()
     ).data or []
 
@@ -198,7 +258,11 @@ def _hydrate_members_with_skills(members: list[dict]) -> list[dict]:
     ]
 
 
-def _tickets_with_skill_codes(project_id: str | None = None, requirement_id: str | None = None) -> list[dict]:
+def _tickets_with_skill_codes(
+    project_id: str | None = None,
+    requirement_id: str | None = None,
+    project_ids: list[str] | None = None,
+) -> list[dict]:
     query = (
         services.get_supabase()
         .table("board_tickets")
@@ -207,19 +271,27 @@ def _tickets_with_skill_codes(project_id: str | None = None, requirement_id: str
     )
     if project_id:
         query = query.eq("project_id", project_id)
+    elif project_ids is not None:
+        if not project_ids:
+            return []
+        query = query.in_("project_id", project_ids)
     if requirement_id:
         query = query.eq("requirement_id", requirement_id)
     return query.execute().data or []
 
 
 def _members_with_dynamic_load(members: list[dict]) -> list[dict]:
-    active = (
-        services.get_supabase()
-        .table("tickets")
-        .select("assignee_id,estimate_hours,status")
-        .in_("status", ["todo", "in_progress"])
-        .execute()
-    ).data or []
+    member_ids = [m["id"] for m in members]
+    active: list[dict] = []
+    if member_ids:
+        active = (
+            services.get_supabase()
+            .table("tickets")
+            .select("assignee_id,estimate_hours,status")
+            .in_("status", ["todo", "in_progress"])
+            .in_("assignee_id", member_ids)
+            .execute()
+        ).data or []
     by_member: dict[str, dict[str, int]] = {}
     for ticket in active:
         assignee_id = ticket.get("assignee_id")
@@ -248,14 +320,351 @@ def _members_with_dynamic_load(members: list[dict]) -> list[dict]:
     return enriched
 
 
-# ---------- 0. Crear requirement (para que el frontend obtenga un id real) ----------
+def _fetch_team(team_id: str) -> dict | None:
+    try:
+        rows = (
+            services.get_supabase()
+            .table("teams")
+            .select("id, name, slug, plan_tier, status, billing_email, created_at, max_meetings_per_month, max_tokens_per_month, max_members")
+            .eq("id", team_id)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        return rows[0] if rows else None
+    except Exception:  # noqa: BLE001 — columnas SaaS aún no migradas
+        rows = (
+            services.get_supabase()
+            .table("teams")
+            .select("id, name, slug, created_at")
+            .eq("id", team_id)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        return rows[0] if rows else None
+
+
+# ---------- Auth / SaaS ----------
+
+@app.get("/api/me", response_model=AuthMeResponse)
+def me(auth: AuthDep):
+    team = _fetch_team(auth.team_id) if auth.team_id else None
+    return AuthMeResponse(
+        user_id=auth.user_id,
+        email=auth.email,
+        team_id=auth.team_id,
+        role=auth.role,
+        team=team,
+        is_authenticated=auth.is_authenticated,
+    )
+
+
+@app.get("/api/teams", response_model=list[TeamOut])
+def list_teams(auth: AuthDep):
+    sb = services.get_supabase()
+    if get_settings().AUTH_DISABLED:
+        if not auth.team_id:
+            return []
+        team = _fetch_team(auth.team_id)
+        if not team:
+            return []
+        return [
+            TeamOut(
+                id=team["id"],
+                name=team["name"],
+                slug=team["slug"],
+                role=auth.role,
+                plan_tier=team.get("plan_tier"),
+                status=team.get("status"),
+                created_at=team.get("created_at"),
+            )
+        ]
+
+    memberships = (
+        sb.table("team_memberships")
+        .select("team_id, role, teams(id, name, slug, plan_tier, status, created_at)")
+        .eq("user_id", auth.user_id)
+        .eq("status", "active")
+        .execute()
+        .data
+        or []
+    )
+    out: list[TeamOut] = []
+    for m in memberships:
+        t = m.get("teams") or {}
+        if isinstance(t, list):
+            t = t[0] if t else {}
+        if not t.get("id"):
+            continue
+        out.append(
+            TeamOut(
+                id=t["id"],
+                name=t.get("name") or "",
+                slug=t.get("slug") or "",
+                role=m.get("role"),
+                plan_tier=t.get("plan_tier"),
+                status=t.get("status"),
+                created_at=t.get("created_at"),
+            )
+        )
+    return out
+
+
+@app.post("/api/teams", response_model=TeamOut, status_code=201)
+def create_team(body: CreateTeamRequest, auth: AuthDep):
+    if not get_settings().AUTH_DISABLED and not auth.is_authenticated:
+        raise HTTPException(status_code=401, detail="Autenticación requerida")
+
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Nombre requerido")
+
+    slug = (body.slug or _slugify(name)).strip().lower()
+    sb = services.get_supabase()
+
+    payload: dict = {"name": name, "slug": slug}
+    if body.billing_email:
+        payload["billing_email"] = body.billing_email
+
+    try:
+        res = sb.table("teams").insert(payload).execute()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"No se pudo crear el team: {exc}") from exc
+
+    team = res.data[0]
+
+    if not get_settings().AUTH_DISABLED:
+        try:
+            sb.table("team_memberships").insert(
+                {
+                    "team_id": team["id"],
+                    "user_id": auth.user_id,
+                    "role": "owner",
+                    "status": "active",
+                }
+            ).execute()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Team creado pero membership falló")
+            raise HTTPException(status_code=500, detail=f"Team creado pero membership falló: {exc}") from exc
+
+    audit.log_audit(
+        team_id=team["id"],
+        user_id=auth.user_id,
+        action="team.create",
+        resource_type="team",
+        resource_id=team["id"],
+        meta={"name": team.get("name"), "slug": team.get("slug")},
+    )
+
+    return TeamOut(
+        id=team["id"],
+        name=team["name"],
+        slug=team["slug"],
+        role="owner",
+        plan_tier=team.get("plan_tier"),
+        status=team.get("status"),
+        created_at=team.get("created_at"),
+    )
+
+
+@app.post("/api/teams/{team_id}/invitations", status_code=201)
+def create_invitation(
+    team_id: str,
+    body: InviteRequest,
+    auth: Annotated[AuthContext, Depends(require_role("owner", "admin"))],
+):
+    if auth.team_id and auth.team_id != team_id and not get_settings().AUTH_DISABLED:
+        raise HTTPException(status_code=403, detail="Solo puedes invitar a tu team activo")
+
+    email = body.email.strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="Email requerido")
+
+    token = secrets.token_urlsafe(32)
+    expires_at = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+    sb = services.get_supabase()
+
+    row = {
+        "team_id": team_id,
+        "email": email,
+        "role": body.role,
+        "token": token,
+        "invited_by": auth.user_id if auth.is_authenticated else None,
+        "expires_at": expires_at,
+    }
+    try:
+        res = sb.table("team_invitations").insert(row).execute()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=503, detail=f"Invitaciones no disponibles: {exc}") from exc
+
+    invite = res.data[0]
+    audit.log_audit(
+        team_id=team_id,
+        user_id=auth.user_id,
+        action="invite.send",
+        resource_type="invitation",
+        resource_id=invite.get("id"),
+        meta={"email": email, "role": body.role},
+    )
+    return {
+        "id": invite["id"],
+        "team_id": team_id,
+        "email": email,
+        "role": body.role,
+        "token": token,
+        "expires_at": expires_at,
+    }
+
+
+@app.post("/api/invitations/accept")
+def accept_invitation(body: InviteAcceptRequest, auth: AuthDep):
+    if not get_settings().AUTH_DISABLED and not auth.is_authenticated:
+        raise HTTPException(status_code=401, detail="Autenticación requerida")
+
+    sb = services.get_supabase()
+    try:
+        rows = (
+            sb.table("team_invitations")
+            .select("*")
+            .eq("token", body.token.strip())
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=503, detail=f"Invitaciones no disponibles: {exc}") from exc
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Invitación no encontrada")
+
+    invite = rows[0]
+    if invite.get("accepted_at"):
+        raise HTTPException(status_code=400, detail="Invitación ya aceptada")
+
+    expires = invite.get("expires_at")
+    if expires:
+        try:
+            exp_dt = datetime.fromisoformat(str(expires).replace("Z", "+00:00"))
+            if exp_dt < datetime.now(timezone.utc):
+                raise HTTPException(status_code=400, detail="Invitación expirada")
+        except HTTPException:
+            raise
+        except Exception:  # noqa: BLE001
+            pass
+
+    role = invite.get("role") or "member"
+    sb.table("team_memberships").upsert(
+        {
+            "team_id": invite["team_id"],
+            "user_id": auth.user_id,
+            "role": role,
+            "status": "active",
+        },
+        on_conflict="team_id,user_id",
+    ).execute()
+
+    sb.table("team_invitations").update(
+        {"accepted_at": datetime.now(timezone.utc).isoformat()}
+    ).eq("id", invite["id"]).execute()
+
+    audit.log_audit(
+        team_id=invite["team_id"],
+        user_id=auth.user_id,
+        action="invite.accept",
+        resource_type="invitation",
+        resource_id=invite.get("id"),
+        meta={"role": role},
+    )
+
+    return {"accepted": True, "team_id": invite["team_id"], "role": role}
+
+
+@app.get("/api/usage", response_model=UsageResponse)
+def usage(auth: TeamAuth):
+    summary = quotas.get_usage_summary(auth.team_id)  # type: ignore[arg-type]
+    return UsageResponse(**summary)
+
+
+@app.get("/api/billing/plans", response_model=list[PlanOut])
+def list_plans(auth: AuthDep):
+    _ = auth  # auth required except health; demo still hits this
+    try:
+        rows = (
+            services.get_supabase()
+            .table("subscription_plans")
+            .select("id, code, name, price_cents_monthly, max_members, max_meetings_per_month, max_tokens_per_month, features")
+            .order("price_cents_monthly")
+            .execute()
+            .data
+            or []
+        )
+        return [PlanOut(**r) for r in rows]
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=503, detail=f"Planes no disponibles: {exc}") from exc
+
+
+@app.post("/api/billing/checkout")
+def billing_checkout(body: dict, auth: TeamAuth):
+    plan_code = (body.get("plan_code") or "").strip().lower()
+    if not plan_code:
+        raise HTTPException(status_code=400, detail="plan_code requerido")
+
+    result = billing.create_checkout_session(auth.team_id, plan_code)  # type: ignore[arg-type]
+    audit.log_audit(
+        team_id=auth.team_id,
+        user_id=auth.user_id,
+        action="billing.checkout",
+        resource_type="plan",
+        resource_id=plan_code,
+        meta={"has_url": bool(result.get("url"))},
+    )
+    if result.get("url") is None and result.get("detail"):
+        raise HTTPException(status_code=501, detail=result["detail"])
+    return result
+
+
+@app.post("/api/billing/webhook")
+async def billing_webhook(request: Request):
+    payload = await request.body()
+    signature = request.headers.get("stripe-signature")
+    verified = billing.verify_webhook_stub(payload, signature)
+    audit.log_audit(
+        team_id=None,
+        user_id=None,
+        action="billing.webhook",
+        resource_type="stripe",
+        meta=verified,
+    )
+    return {"received": True, **verified}
+
+
+@app.get("/api/billing/subscription")
+def billing_subscription(auth: TeamAuth):
+    row = billing.get_team_subscription(auth.team_id)  # type: ignore[arg-type]
+    if not row:
+        return {"subscription": None}
+    return {"subscription": row}
+
+
+# ---------- 0. Crear requirement ----------
 
 @app.post("/api/requirements", response_model=CreateRequirementResponse, status_code=201)
-def create_requirement(body: CreateRequirementRequest):
-    project_id = body.project_id or services.get_default_project_id()
+def create_requirement(body: CreateRequirementRequest, auth: TeamAuth):
+    sb = services.get_supabase()
+    project_id = body.project_id
+    if project_id:
+        tenancy.assert_team_owns_project(sb, auth.team_id, project_id)  # type: ignore[arg-type]
+    else:
+        project_id = services.get_default_project_id(auth.team_id)
     if not project_id:
         raise HTTPException(status_code=400, detail="No hay proyecto disponible en la base de datos")
-    row = services.create_requirement(project_id=project_id, title=body.title)
+    row = services.create_requirement(
+        project_id=project_id, title=body.title, team_id=auth.team_id
+    )
     return CreateRequirementResponse(
         id=row["id"],
         project_id=row["project_id"],
@@ -267,35 +676,65 @@ def create_requirement(body: CreateRequirementRequest):
 # ---------- 1. Transcripción ----------
 
 @app.post("/api/transcribe", response_model=TranscribeResponse)
-def transcribe(file: UploadFile = File(...), project_id: str | None = Form(default=None)):
+def transcribe(
+    auth: TeamAuth,
+    file: UploadFile = File(...),
+    project_id: str | None = Form(default=None),
+):
+    settings = get_settings()
     content = file.file.read()
     if not content:
         raise HTTPException(status_code=400, detail="Archivo de audio vacío")
+    if len(content) > settings.MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Archivo demasiado grande (máx {settings.MAX_UPLOAD_BYTES} bytes)",
+        )
+
+    quotas.check_quota(auth.team_id, "meetings")  # type: ignore[arg-type]
+
+    sb = services.get_supabase()
+    if project_id:
+        tenancy.assert_team_owns_project(sb, auth.team_id, project_id)  # type: ignore[arg-type]
+
     text = services.transcribe_audio(file.filename or "audio", content, file.content_type)
     if not text:
         raise HTTPException(status_code=502, detail="ElevenLabs no devolvió texto")
 
-    resolved_project_id = project_id or services.get_default_project_id()
+    # Firewall post-STT antes de persistir
+    result_dat = scan_prompt(text)
+    if not result_dat.is_content_safe:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Transcript no seguro: {result_dat.compres_hilos_detect}",
+        )
+    safe_text = result_dat.prompt_data
+
+    resolved_project_id = project_id or services.get_default_project_id(auth.team_id)
     meeting_id = None
     if resolved_project_id:
         meeting_id = services.create_meeting(
             project_id=resolved_project_id,
-            transcript=text,
+            transcript=safe_text,
             source="upload",
             title=file.filename,
+            team_id=auth.team_id,
         )
+        quotas.record_usage(auth.team_id, "meetings", 1, meta={"meeting_id": meeting_id})  # type: ignore[arg-type]
     else:
         logger.warning("No hay project_id disponible; el transcript no se guardó en meetings")
 
-    return TranscribeResponse(text=text, meeting_id=meeting_id)
+    return TranscribeResponse(text=safe_text, meeting_id=meeting_id)
 
 
 # ---------- 2. Meeting Agent ----------
 
 @app.post("/api/agents/meeting", response_model=MeetingAgentOutput)
-def meeting_agent(body: MeetingAgentRequest):
+def meeting_agent(body: MeetingAgentRequest, auth: TeamAuth):
     if not body.transcript.strip():
         raise HTTPException(status_code=400, detail="Transcript vacío")
+
+    quotas.check_quota(auth.team_id, "tokens")  # type: ignore[arg-type]
 
     result_dat = scan_prompt(body.transcript)
     if not result_dat.is_content_safe:
@@ -306,7 +745,7 @@ def meeting_agent(body: MeetingAgentRequest):
 
     safe_transcript = result_dat.prompt_data
 
-    requirement = _get_requirement_or_404(body.requirement_id)
+    requirement = _get_requirement_or_404(body.requirement_id, auth.team_id)
     meeting_id = services.save_meeting_transcript(
         requirement_id=body.requirement_id,
         project_id=requirement["project_id"],
@@ -316,7 +755,9 @@ def meeting_agent(body: MeetingAgentRequest):
 
     existing_tickets = _tickets_with_skill_codes(project_id=body.project_id or requirement["project_id"])
 
-    output = services.run_meeting_agent(safe_transcript, existing_tickets=existing_tickets)
+    output = services.run_meeting_agent(
+        safe_transcript, existing_tickets=existing_tickets, team_id=auth.team_id
+    )
     sb = services.get_supabase()
 
     sb.table("requirements").update(
@@ -349,18 +790,20 @@ def meeting_agent(body: MeetingAgentRequest):
 # ---------- 3. Assignment Agent ----------
 
 @app.post("/api/agents/assignment", response_model=AssignmentAgentOutput)
-def assignment_agent(body: AssignmentAgentRequest):
+def assignment_agent(body: AssignmentAgentRequest, auth: TeamAuth):
     sb = services.get_supabase()
+    _get_requirement_or_404(body.requirement_id, auth.team_id)
+    quotas.check_quota(auth.team_id, "tokens")  # type: ignore[arg-type]
 
     tickets = _hydrate_tickets_with_skills(_get_tickets_by_requirement(body.requirement_id))
     if not tickets:
         raise HTTPException(status_code=404, detail="No hay tickets para ese requirement_id")
 
-    members = _members_with_dynamic_load((sb.table("members").select("*").execute()).data or [])
+    members = _members_with_dynamic_load(tenancy.members_for_team(sb, auth.team_id))  # type: ignore[arg-type]
     if not members:
         raise HTTPException(status_code=404, detail="No hay miembros en la tabla members")
 
-    output = services.run_assignment_agent(tickets, members)
+    output = services.run_assignment_agent(tickets, members, team_id=auth.team_id)
 
     member_by_name = {m["name"].strip().lower(): m for m in members}
     ticket_by_title = {t["title"].strip().lower(): t for t in tickets}
@@ -389,25 +832,23 @@ def assignment_agent(body: AssignmentAgentRequest):
 # ---------- 4. PATCH ticket ----------
 
 @app.patch("/api/tickets/{ticket_id}")
-def patch_ticket(ticket_id: str, body: TicketPatch):
+def patch_ticket(ticket_id: str, body: TicketPatch, auth: TeamAuth):
     updates = body.model_dump(exclude_none=True)
     if not updates:
         raise HTTPException(status_code=400, detail="Nada que actualizar")
 
     sb = services.get_supabase()
-
-    previous_status = None
-    if "status" in updates:
-        current = sb.table("tickets").select("status").eq("id", ticket_id).execute().data
-        if current:
-            previous_status = current[0].get("status")
+    current = tenancy.assert_team_owns_ticket(sb, auth.team_id, ticket_id)  # type: ignore[arg-type]
+    previous_status = current.get("status") if "status" in updates else None
 
     res = sb.table("tickets").update(updates).eq("id", ticket_id).execute()
     if not res.data:
         raise HTTPException(status_code=404, detail="Ticket no encontrado")
 
     if "status" in updates:
-        services.log_ticket_status_event(ticket_id, previous_status, updates["status"], source="web")
+        services.log_ticket_status_event(
+            ticket_id, previous_status, updates["status"], source="web"
+        )
 
     return res.data[0]
 
@@ -415,12 +856,20 @@ def patch_ticket(ticket_id: str, body: TicketPatch):
 # ---------- 5. Aprobar ----------
 
 @app.post("/api/approve/{requirement_id}", response_model=ApproveResponse)
-def approve(requirement_id: str):
+def approve(requirement_id: str, auth: TeamAuth):
     sb = services.get_supabase()
+    _get_requirement_or_404(requirement_id, auth.team_id)
+
+    update_payload: dict = {
+        "status": "approved",
+        "approved_at": datetime.now(timezone.utc).isoformat(),
+    }
+    # approved_by_id espera members.id; solo setear si el user_id parece un member uuid.
+    # En demo usamos demo-user; en prod se puede linkear vía members.user_id.
 
     req_res = (
         sb.table("requirements")
-        .update({"status": "approved", "approved_at": "now()"})
+        .update(update_payload)
         .eq("id", requirement_id)
         .execute()
     )
@@ -428,7 +877,11 @@ def approve(requirement_id: str):
         raise HTTPException(status_code=404, detail="Requirement no encontrado")
 
     tickets = _get_tickets_by_requirement(requirement_id)
-    payload = {"requirement": req_res.data[0], "tickets": tickets}
+    payload = {
+        "requirement": req_res.data[0],
+        "tickets": tickets,
+        "approved_by": {"user_id": auth.user_id, "email": auth.email},
+    }
     notified = services.notify_n8n(payload)
 
     approval_id = services.record_approval(
@@ -436,88 +889,65 @@ def approve(requirement_id: str):
     )
     services.create_notifications(approval_id, tickets)
 
+    audit.log_audit(
+        team_id=auth.team_id,
+        user_id=auth.user_id,
+        action="plan.approve",
+        resource_type="requirement",
+        resource_id=requirement_id,
+        meta={"n8n_notified": notified},
+    )
+
     return ApproveResponse(status="approved", requirement_id=requirement_id, n8n_notified=notified)
 
 
 # ---------- 6. Miembros del equipo ----------
 
 @app.get("/api/members")
-def list_members():
+def list_members(auth: TeamAuth):
     """Lista los miembros del equipo (con sus skills) para la vista de Equipo del frontend."""
-    rows = (
-        services.get_supabase()
-        .table("members")
-        .select("id, team_id, name, role, email, current_load, is_manager")
-        .order("is_manager")
-        .order("name")
-        .execute()
-    ).data or []
+    rows = tenancy.members_for_team(services.get_supabase(), auth.team_id)  # type: ignore[arg-type]
     return _members_with_dynamic_load(rows)
 
 
 # ---------- 7. Proyectos disponibles ----------
 
 @app.get("/api/projects")
-def list_projects():
-    """Lista proyectos disponibles. Permite que el frontend ofrezca
-    un selector al crear un requirement en vez de usar el default."""
-    rows = (
-        services.get_supabase()
-        .table("projects")
-        .select("id, name, status, business_area, target_date")
-        .order("name")
-        .execute()
-    ).data or []
-    return rows
+def list_projects(auth: TeamAuth):
+    """Lista proyectos del team activo."""
+    return tenancy.projects_for_team(services.get_supabase(), auth.team_id)  # type: ignore[arg-type]
 
 
 # ---------- 8. Workspace/proyecto/tickets/comentarios ----------
 
 @app.get("/api/workspace")
-def workspace():
-    """Snapshot completo para hidratar el frontend desde Supabase."""
+def workspace(auth: TeamAuth):
+    """Snapshot completo para hidratar el frontend desde Supabase (scoped por team)."""
     sb = services.get_supabase()
-    members = _members_with_dynamic_load(
-        sb.table("members")
-        .select("id, team_id, name, role, email, current_load, is_manager")
-        .order("is_manager")
-        .order("name")
-        .execute()
-        .data
-        or []
-    )
-    projects = (
-        sb.table("projects")
-        .select("id, team_id, code, name, description, business_area, status, owner_id, target_date, created_at")
-        .order("created_at", desc=True)
-        .execute()
-        .data
-        or []
-    )
-    requirements = (
-        sb.table("requirements")
-        .select("id, project_id, meeting_id, title, summary, status, created_at")
-        .order("created_at", desc=True)
-        .execute()
-        .data
-        or []
-    )
-    tickets = _tickets_with_skill_codes()
+    team_id = auth.team_id  # type: ignore[assignment]
+    members = _members_with_dynamic_load(tenancy.members_for_team(sb, team_id))
+    projects = tenancy.projects_for_team(sb, team_id)
+    project_ids = [p["id"] for p in projects]
+
+    requirements: list[dict] = []
+    if project_ids:
+        requirements = (
+            sb.table("requirements")
+            .select("id, project_id, meeting_id, title, summary, status, created_at")
+            .in_("project_id", project_ids)
+            .order("created_at", desc=True)
+            .execute()
+            .data
+            or []
+        )
+    tickets = _tickets_with_skill_codes(project_ids=project_ids)
     return {"members": members, "projects": projects, "requirements": requirements, "tickets": tickets}
 
 
 @app.get("/api/projects/{project_id}/work")
-def project_work(project_id: str):
+def project_work(project_id: str, auth: TeamAuth):
     sb = services.get_supabase()
-    project = (
-        sb.table("projects")
-        .select("id, team_id, code, name, description, business_area, status, owner_id, target_date, created_at")
-        .eq("id", project_id)
-        .execute()
-        .data
-    )
-    if not project:
-        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    project = tenancy.assert_team_owns_project(sb, auth.team_id, project_id)  # type: ignore[arg-type]
     requirements = (
         sb.table("requirements")
         .select("id, project_id, meeting_id, title, summary, status, created_at")
@@ -537,14 +967,15 @@ def project_work(project_id: str):
         or []
     )
     tickets = _tickets_with_skill_codes(project_id=project_id)
-    return {"project": project[0], "requirements": requirements, "meetings": meetings, "tickets": tickets}
+    return {"project": project, "requirements": requirements, "meetings": meetings, "tickets": tickets}
 
 
 @app.post("/api/tickets")
-def create_ticket(body: CreateTicketRequest):
+def create_ticket(body: CreateTicketRequest, auth: TeamAuth):
     sb = services.get_supabase()
-    requirement = _get_requirement_or_404(body.requirement_id)
+    requirement = _get_requirement_or_404(body.requirement_id, auth.team_id)
     project_id = body.project_id or requirement["project_id"]
+    tenancy.assert_team_owns_project(sb, auth.team_id, project_id)  # type: ignore[arg-type]
     skill_id = _get_skill_ids_by_code().get(body.required_skill)
     payload = {
         "requirement_id": body.requirement_id,
@@ -572,7 +1003,8 @@ def create_ticket(body: CreateTicketRequest):
 
 
 @app.get("/api/tickets/{ticket_id}/comments", response_model=list[TicketCommentResponse])
-def list_ticket_comments(ticket_id: str):
+def list_ticket_comments(ticket_id: str, auth: TeamAuth):
+    tenancy.assert_team_owns_ticket(services.get_supabase(), auth.team_id, ticket_id)  # type: ignore[arg-type]
     rows = (
         services.get_supabase()
         .table("project_knowledge_sources")
@@ -597,23 +1029,27 @@ def list_ticket_comments(ticket_id: str):
 
 
 @app.post("/api/tickets/{ticket_id}/comments", response_model=TicketCommentResponse)
-def create_ticket_comment(ticket_id: str, body: TicketCommentRequest):
+def create_ticket_comment(ticket_id: str, body: TicketCommentRequest, auth: TeamAuth):
     sb = services.get_supabase()
-    ticket = sb.table("tickets").select("id, project_id, title").eq("id", ticket_id).execute().data
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket no encontrado")
+    ticket = tenancy.assert_team_owns_ticket(sb, auth.team_id, ticket_id)  # type: ignore[arg-type]
     text = body.body.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Comentario vacío")
+    # Prefer explicit author_id; fall back to auth user when it looks like a member id.
+    author_id = body.author_id
     res = sb.table("project_knowledge_sources").insert(
         {
-            "project_id": ticket[0]["project_id"],
-            "title": f"Comentario: {ticket[0]['title'][:60]}",
+            "project_id": ticket["project_id"],
+            "title": f"Comentario: {(ticket.get('title') or '')[:60]}",
             "source_type": "manual_note",
             "raw_content": text,
             "summary": text[:240],
-            "created_by_id": body.author_id,
-            "metadata": {"ticket_id": ticket_id, "kind": "ticket_comment"},
+            "created_by_id": author_id,
+            "metadata": {
+                "ticket_id": ticket_id,
+                "kind": "ticket_comment",
+                "auth_user_id": auth.user_id,
+            },
         }
     ).execute()
     row = res.data[0]
@@ -642,7 +1078,7 @@ def health_db():
 # ---------- 10. Error tracking ----------
 
 @app.post("/api/client-errors", status_code=201)
-def report_client_error(body: ClientErrorReport, request: Request):
+def report_client_error(body: ClientErrorReport, request: Request, auth: AuthDep):
     """El frontend reporta acá sus errores (no escribe directo a Supabase)."""
     services.log_error(
         message=body.message,
@@ -656,11 +1092,16 @@ def report_client_error(body: ClientErrorReport, request: Request):
         context=body.context,
         request_id=body.request_id or _request_id(request),
         user_agent=request.headers.get("user-agent"),
+        team_id=auth.team_id,
     )
     return {"logged": True}
 
 
 @app.get("/api/errors")
-def list_errors(limit: int = 50, source: str | None = None):
+def list_errors(
+    auth: Annotated[AuthContext, Depends(require_role("owner", "admin"))],
+    limit: int = 50,
+    source: str | None = None,
+):
     """Últimos errores registrados (backend + frontend) para el panel de Sistema."""
-    return services.list_error_logs(limit=limit, source=source)
+    return services.list_error_logs(limit=limit, source=source, team_id=auth.team_id)

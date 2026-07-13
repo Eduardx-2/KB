@@ -57,9 +57,12 @@ def get_openai() -> OpenAI:
 
 # ---------- Persistencia de meetings ----------
 
-def get_default_project_id() -> str | None:
+def get_default_project_id(team_id: str | None = None) -> str | None:
     """Devuelve un project_id de respaldo (el primero disponible) para guardar el meeting."""
-    res = get_supabase().table("projects").select("id").limit(1).execute()
+    query = get_supabase().table("projects").select("id")
+    if team_id:
+        query = query.eq("team_id", team_id)
+    res = query.limit(1).execute()
     return res.data[0]["id"] if res.data else None
 
 
@@ -69,17 +72,17 @@ def create_meeting(
     transcript: str,
     source: str = "upload",
     title: str | None = None,
+    team_id: str | None = None,  # noqa: ARG001 — reserved for future meetings.team_id
 ) -> str:
     """Crea un registro en meetings con el transcript crudo y devuelve su id."""
-    res = get_supabase().table("meetings").insert(
-        {
-            "primary_project_id": project_id,
-            "raw_transcript": transcript,
-            "status": "transcribed",
-            "source": source,
-            "title": title,
-        }
-    ).execute()
+    payload = {
+        "primary_project_id": project_id,
+        "raw_transcript": transcript,
+        "status": "transcribed",
+        "source": source,
+        "title": title,
+    }
+    res = get_supabase().table("meetings").insert(payload).execute()
     return res.data[0]["id"]
 
 
@@ -88,6 +91,7 @@ def create_requirement(
     project_id: str,
     title: str | None = None,
     origin_project_id: str | None = None,
+    team_id: str | None = None,  # noqa: ARG001 — scoped via project_id
 ) -> dict:
     """Crea un requirement en estado 'draft' y devuelve la fila (id, project_id, ...)."""
     res = get_supabase().table("requirements").insert(
@@ -227,6 +231,7 @@ def log_error(
     context: dict | None = None,
     request_id: str | None = None,
     user_agent: str | None = None,
+    team_id: str | None = None,
 ) -> None:
     """Registra un error en error_logs. Best-effort: nunca rompe el request.
 
@@ -234,27 +239,32 @@ def log_error(
     para errores del frontend reportados vía POST /api/client-errors.
     """
     try:
-        get_supabase().table("error_logs").insert(
-            {
-                "source": source,
-                "severity": severity,
-                "error_type": error_type,
-                "http_status": http_status,
-                "http_method": http_method,
-                "path": path,
-                # recortes defensivos para no guardar payloads gigantes
-                "message": (message or "")[:8000],
-                "stack": stack[:20000] if stack else None,
-                "context": context,
-                "request_id": request_id,
-                "user_agent": user_agent[:1000] if user_agent else None,
-            }
-        ).execute()
+        payload = {
+            "source": source,
+            "severity": severity,
+            "error_type": error_type,
+            "http_status": http_status,
+            "http_method": http_method,
+            "path": path,
+            # recortes defensivos para no guardar payloads gigantes
+            "message": (message or "")[:8000],
+            "stack": stack[:20000] if stack else None,
+            "context": context,
+            "request_id": request_id,
+            "user_agent": user_agent[:1000] if user_agent else None,
+        }
+        if team_id:
+            payload["team_id"] = team_id
+        get_supabase().table("error_logs").insert(payload).execute()
     except Exception:  # noqa: BLE001 — el logging jamás tumba el endpoint
         logger.exception("No se pudo escribir error_logs (ignorado)")
 
 
-def list_error_logs(limit: int = 50, source: str | None = None) -> list[dict]:
+def list_error_logs(
+    limit: int = 50,
+    source: str | None = None,
+    team_id: str | None = None,
+) -> list[dict]:
     """Lee los últimos errores (para el panel de Sistema del frontend)."""
     query = (
         get_supabase()
@@ -265,29 +275,78 @@ def list_error_logs(limit: int = 50, source: str | None = None) -> list[dict]:
     )
     if source:
         query = query.eq("source", source)
+    if team_id:
+        try:
+            query = query.eq("team_id", team_id)
+        except Exception:  # noqa: BLE001
+            pass
     return query.execute().data or []
 
 
 # ---------- Logging de agentes ----------
 
-def log_agent(agent: str, latency_ms: int, ok: bool) -> None:
+def log_agent(agent: str, latency_ms: int, ok: bool, team_id: str | None = None) -> None:
     """Escribe en agent_logs. Nunca rompe el request si falla."""
     try:
-        get_supabase().table("agent_logs").insert(
-            {
-                "agent": agent,
-                "latency_ms": latency_ms,
-                "model": get_settings().OPENAI_MODEL,
-                "ok": ok,
-            }
-        ).execute()
+        payload = {
+            "agent": agent,
+            "latency_ms": latency_ms,
+            "model": get_settings().OPENAI_MODEL,
+            "ok": ok,
+        }
+        if team_id:
+            payload["team_id"] = team_id
+        get_supabase().table("agent_logs").insert(payload).execute()
     except Exception:  # noqa: BLE001 — el log jamás tumba el endpoint
+        # Reintento sin team_id si la columna no existe aún.
+        if team_id:
+            try:
+                get_supabase().table("agent_logs").insert(
+                    {
+                        "agent": agent,
+                        "latency_ms": latency_ms,
+                        "model": get_settings().OPENAI_MODEL,
+                        "ok": ok,
+                    }
+                ).execute()
+                return
+            except Exception:  # noqa: BLE001
+                pass
         logger.exception("No se pudo escribir agent_logs (ignorado)")
+
+
+def _record_token_usage(completion, team_id: str | None) -> None:
+    """Si el completion trae usage, lo registra (best-effort)."""
+    if not team_id:
+        return
+    try:
+        usage = getattr(completion, "usage", None)
+        if not usage:
+            return
+        total = int(getattr(usage, "total_tokens", 0) or 0)
+        prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
+        completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+        try:
+            from .quotas import record_usage
+        except ImportError:
+            from quotas import record_usage
+        if prompt:
+            record_usage(team_id, "tokens_in", prompt)
+        if completion_tokens:
+            record_usage(team_id, "tokens_out", completion_tokens)
+        elif total:
+            record_usage(team_id, "tokens", total)
+    except Exception:  # noqa: BLE001
+        logger.exception("No se pudo registrar usage de tokens (ignorado)")
 
 
 # ---------- LLM: agentes con Structured Outputs ----------
 
-def run_meeting_agent(transcript: str, existing_tickets: list[dict] | None = None) -> MeetingAgentOutput:
+def run_meeting_agent(
+    transcript: str,
+    existing_tickets: list[dict] | None = None,
+    team_id: str | None = None,
+) -> MeetingAgentOutput:
     """Transcript → MeetingAgentOutput. Schema garantizado por Structured Outputs.
 
     Seguridad: el transcript SIEMPRE viaja como mensaje `user`, nunca concatenado
@@ -323,13 +382,18 @@ def run_meeting_agent(transcript: str, existing_tickets: list[dict] | None = Non
         result = completion.choices[0].message.parsed
         if result is None:  # p.ej. refusal — tratarlo como fallo controlado
             raise RuntimeError("El modelo no devolvió un objeto parseado")
+        _record_token_usage(completion, team_id)
         ok = True
         return result
     finally:
-        log_agent("meeting", int((time.perf_counter() - start) * 1000), ok)
+        log_agent("meeting", int((time.perf_counter() - start) * 1000), ok, team_id=team_id)
 
 
-def run_assignment_agent(tickets: list[dict], members: list[dict]) -> AssignmentAgentOutput:
+def run_assignment_agent(
+    tickets: list[dict],
+    members: list[dict],
+    team_id: str | None = None,
+) -> AssignmentAgentOutput:
     """Tickets + members → recomendaciones de asignación con % de riesgo."""
     client = get_openai()
     # Contexto compacto: solo los campos que el modelo necesita.
@@ -371,10 +435,11 @@ def run_assignment_agent(tickets: list[dict], members: list[dict]) -> Assignment
         result = completion.choices[0].message.parsed
         if result is None:
             raise RuntimeError("El modelo no devolvió un objeto parseado")
+        _record_token_usage(completion, team_id)
         ok = True
         return result
     finally:
-        log_agent("assignment", int((time.perf_counter() - start) * 1000), ok)
+        log_agent("assignment", int((time.perf_counter() - start) * 1000), ok, team_id=team_id)
 
 
 # ---------- ElevenLabs STT (Scribe) ----------
@@ -399,11 +464,15 @@ def transcribe_audio(filename: str, content: bytes, content_type: str | None) ->
 
 def notify_n8n(payload: dict) -> bool:
     """POST al webhook de n8n. Devuelve True/False; nunca lanza excepción."""
-    if not get_settings().N8N_WEBHOOK_URL:
+    settings = get_settings()
+    if not settings.N8N_WEBHOOK_URL:
         logger.warning("Falta N8N_WEBHOOK_URL en backend/.env; se omite notificación")
         return False
     try:
-        resp = httpx.post(get_settings().N8N_WEBHOOK_URL, json=payload, timeout=15.0)
+        headers = {}
+        if settings.N8N_WEBHOOK_SECRET:
+            headers["X-Webhook-Secret"] = settings.N8N_WEBHOOK_SECRET
+        resp = httpx.post(settings.N8N_WEBHOOK_URL, json=payload, headers=headers, timeout=15.0)
         resp.raise_for_status()
         return True
     except Exception:  # noqa: BLE001

@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { Toaster } from "sonner";
-import { AppShell } from "@/components/layout/app-shell";
+import { AuthProvider } from "@/components/auth/auth-provider";
+import { AuthLayoutShell } from "@/components/auth/auth-layout-shell";
 import { ErrorReportingInit } from "@/components/system/error-reporting-init";
 import { StoreHydrator } from "@/components/layout/store-hydrator";
 import { ThemeProvider } from "@/components/layout/theme-provider";
@@ -44,10 +45,12 @@ export default function RootLayout({
       </head>
       <body className="min-h-full bg-[var(--background)] text-[var(--foreground)] antialiased">
         <ThemeProvider>
-          <StoreHydrator />
-          <ErrorReportingInit />
-          <AppShell>{children}</AppShell>
-          <Toaster position="top-right" richColors closeButton />
+          <AuthProvider>
+            <StoreHydrator />
+            <ErrorReportingInit />
+            <AuthLayoutShell>{children}</AuthLayoutShell>
+            <Toaster position="top-right" richColors closeButton />
+          </AuthProvider>
         </ThemeProvider>
       </body>
     </html>

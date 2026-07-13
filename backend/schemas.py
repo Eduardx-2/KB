@@ -139,3 +139,57 @@ class ClientErrorReport(BaseModel):
     stack: Optional[str] = None
     context: Optional[dict] = None
     request_id: Optional[str] = None
+
+
+# ---------- SaaS auth / billing ----------
+
+class AuthMeResponse(BaseModel):
+    user_id: str
+    email: Optional[str] = None
+    team_id: Optional[str] = None
+    role: Optional[str] = None
+    team: Optional[dict] = None
+    is_authenticated: bool = False
+
+
+class CreateTeamRequest(BaseModel):
+    name: str
+    slug: Optional[str] = None
+    billing_email: Optional[str] = None
+
+
+class TeamOut(BaseModel):
+    id: str
+    name: str
+    slug: str
+    role: Optional[str] = None
+    plan_tier: Optional[str] = None
+    status: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class InviteRequest(BaseModel):
+    email: str
+    role: Literal["owner", "admin", "member", "viewer"] = "member"
+
+
+class InviteAcceptRequest(BaseModel):
+    token: str
+
+
+class UsageResponse(BaseModel):
+    team_id: str
+    period_start: str
+    team: dict
+    usage: dict
+
+
+class PlanOut(BaseModel):
+    id: str
+    code: str
+    name: str
+    price_cents_monthly: Optional[int] = None
+    max_members: Optional[int] = None
+    max_meetings_per_month: Optional[int] = None
+    max_tokens_per_month: Optional[int] = None
+    features: Optional[dict] = None

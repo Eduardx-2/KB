@@ -145,3 +145,42 @@ export interface HealthState {
   mode: RunMode;
   checked_at: string | null;
 }
+
+/** Roles de membresía SaaS (team_memberships.role). */
+export type MembershipRole = "owner" | "admin" | "member" | "viewer";
+
+export interface Team {
+  id: string;
+  name: string;
+  slug: string;
+  role?: MembershipRole | string | null;
+  plan_tier?: string | null;
+  status?: string | null;
+  created_at?: string | null;
+}
+
+export interface Plan {
+  id: string;
+  code: string;
+  name: string;
+  price_cents_monthly?: number | null;
+  max_members?: number | null;
+  max_meetings_per_month?: number | null;
+  max_tokens_per_month?: number | null;
+  features?: Record<string, unknown> | null;
+}
+
+export interface UsageSummary {
+  team_id: string;
+  period_start: string;
+  team: {
+    id?: string;
+    name?: string;
+    plan_tier?: string | null;
+    max_meetings_per_month?: number | null;
+    max_tokens_per_month?: number | null;
+    max_members?: number | null;
+    [key: string]: unknown;
+  };
+  usage: Record<string, number>;
+}

@@ -8,7 +8,7 @@
  * Es best-effort: si el backend no está disponible o falla, nunca rompe la app.
  */
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") || "";
+import { authHeaders, API_BASE } from "./api";
 
 export type ErrorSeverity = "info" | "warning" | "error" | "critical";
 
@@ -28,9 +28,10 @@ export async function reportClientError(input: ClientErrorInput): Promise<void> 
   // Sin backend real no hay dónde loguear (la demo corre en modo mock).
   if (!API_BASE) return;
   try {
+    const headers = await authHeaders({ "Content-Type": "application/json" });
     await fetch(`${API_BASE}/api/client-errors`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({
         severity: "error",
         ...input,

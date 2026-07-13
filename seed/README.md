@@ -1,10 +1,32 @@
 # seed/ — Datos + n8n (dueño: R3)
 
-Acá van, según `PROYECTO.md` (secciones 4.1, 4.5 y 5):
+Acá van, según `PROYECTO.md` (secciones 4.1, 4.5 y 5) y el go-live SaaS:
 
-- SQL de las tablas de Supabase (sección 4.1) y `reset_demo.sql`.
-- Los 2 transcripts de ejemplo (dorado ~300 palabras / realista ~800 palabras con muletillas).
-  Ya viven también en `frontend/src/lib/mock-data.ts` (`GOLDEN_TRANSCRIPT`, `REALISTIC_TRANSCRIPT`)
-  para que el frontend pueda demostrar el flujo completo sin depender de este backend.
-- `cached/` con respuestas reales de la IA como respaldo para la demo.
-- El workflow de n8n ("Aprobación") y su URL de webhook (va en el vault del equipo y en `backend/.env`).
+## Orden de migraciones (Supabase SQL Editor)
+
+1. `001_schema.sql` — schema base (obligatorio)
+2. `002_seed_demo.sql` — datos demo (opcional en prod limpia)
+3. `004_error_logs.sql` — error tracking
+4. `006_saas_multitenant.sql` — **obligatorio SaaS** (memberships, planes, cuotas, RLS auth)
+5. `008_audit_events.sql` — auditoría de seguridad / compliance
+
+También:
+- `reset_demo.sql` — limpia y re-siembra para ensayos
+- Transcripts de ejemplo (dorado / realista) — también en `frontend/src/lib/mock-data.ts`
+- `cached/` — respuestas IA de respaldo para la demo
+- Workflows n8n viven en `/n8n` (webhook en `backend/.env`)
+
+Guía completa: [`docs/SAAS_GOLIVE.md`](../docs/SAAS_GOLIVE.md).
+
+## Orden de migraciones (SQL Editor)
+
+| Orden | Archivo | Notas |
+|------:|---------|--------|
+| 1 | `001_schema.sql` | Schema base |
+| 2 | `002_seed_demo.sql` | Datos demo (opcional en prod) |
+| 3 | `004_error_logs.sql` | Error tracking |
+| 4 | `006_saas_multitenant.sql` | **SaaS** — teams, memberships, planes, cuotas, RLS auth |
+
+Opcionales de prueba: `003_endpoint_test_data.sql`, `005_full_flow_demo.sql`.
+
+Go-live: [`docs/SAAS_GOLIVE.md`](../docs/SAAS_GOLIVE.md).

@@ -7,3 +7,4 @@ supabase
 httpx
 python-multipart
 python-dotenv
+PyJWT>=2.8

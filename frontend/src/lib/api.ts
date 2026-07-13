@@ -1,3 +1,5 @@
+import { useAuthStore } from "./auth-store";
+import { getAccessToken } from "./supabase";
 import { useAppStore } from "./store";
 import { simulateAssignmentAgent, simulateMeetingAgent } from "./mock-engine";
 import { sleep } from "./utils";
@@ -8,11 +10,14 @@ import type {
   HealthState,
   MeetingAgentOutput,
   Member,
+  Plan,
   Project,
   Requirement,
   RunMode,
+  Team,
   Ticket,
   TicketComment,
+  UsageSummary,
 } from "./types";
 
 /**
@@ -28,11 +33,44 @@ import type {
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") || "";
 export const HAS_LIVE_BACKEND = Boolean(API_BASE);
 
+/** Headers de auth SaaS: Bearer JWT + X-Team-Id del store. */
+export async function authHeaders(extra?: HeadersInit): Promise<Record<string, string>> {
+  const headers: Record<string, string> = {};
+
+  if (extra) {
+    const normalized = new Headers(extra);
+    normalized.forEach((value, key) => {
+      headers[key] = value;
+    });
+  }
+
+  try {
+    const token = await getAccessToken();
+    if (token) headers.Authorization = `Bearer ${token}`;
+  } catch {
+    // sin token
+  }
+
+  try {
+    const teamId = useAuthStore.getState().teamId;
+    if (teamId) headers["X-Team-Id"] = teamId;
+  } catch {
+    // store no disponible
+  }
+
+  return headers;
+}
+
 async function fetchWithTimeout(input: string, init: RequestInit = {}, timeoutMs = 6000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(input, { ...init, signal: controller.signal });
+    const headers = await authHeaders(init.headers);
+    // FormData: no forzar Content-Type (el browser pone el boundary)
+    if (init.body instanceof FormData) {
+      delete headers["Content-Type"];
+    }
+    return await fetch(input, { ...init, headers, signal: controller.signal });
   } finally {
     clearTimeout(timer);
   }
@@ -69,7 +107,7 @@ function normalizeTicket(raw: Record<string, unknown>): Ticket {
     assignee_id: raw.assignee_id ? String(raw.assignee_id) : null,
     status: (raw.status as Ticket["status"]) ?? "backlog",
     deadline: raw.deadline ? String(raw.deadline) : null,
-    team_id: "live",
+    team_id: String(raw.team_id ?? "live"),
   };
 }
 
@@ -83,7 +121,7 @@ function normalizeRequirement(raw: Record<string, unknown>): Requirement {
     summary: String(raw.summary ?? ""),
     status: (raw.status as Requirement["status"]) ?? "draft",
     created_at: String(raw.created_at ?? new Date().toISOString()),
-    team_id: "live",
+    team_id: String(raw.team_id ?? "live"),
   };
 }
 
@@ -466,4 +504,127 @@ export async function approveRequirement(
     ok: true,
   });
   return { n8n_notified: true, mode: "mock" };
+}
+
+// ─── SaaS auth / tenancy helpers ─────────────────────────────────────────────
+
+export async function fetchMe(): Promise<{
+  user_id: string;
+  email: string | null;
+  team_id: string | null;
+  role: string | null;
+  team: Record<string, unknown> | null;
+  is_authenticated: boolean;
+} | null> {
+  if (!HAS_LIVE_BACKEND) return null;
+  try {
+    const res = await fetchWithTimeout(`${API_BASE}/api/me`, {}, 6000);
+    if (!res.ok) throw new Error(String(res.status));
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchTeams(): Promise<Team[]> {
+  if (!HAS_LIVE_BACKEND) return [];
+  try {
+    const res = await fetchWithTimeout(`${API_BASE}/api/teams`, {}, 6000);
+    if (!res.ok) throw new Error(String(res.status));
+    return (await res.json()) as Team[];
+  } catch {
+    return [];
+  }
+}
+
+export async function createTeam(name: string, slug?: string): Promise<Team | null> {
+  if (!HAS_LIVE_BACKEND) {
+    const id = `team-${crypto.randomUUID?.() ?? Math.random().toString(36).slice(2)}`;
+    return {
+      id,
+      name,
+      slug: slug || name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, ""),
+      role: "owner",
+      plan_tier: "free",
+    };
+  }
+  try {
+    const res = await fetchWithTimeout(
+      `${API_BASE}/api/teams`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, slug }),
+      },
+      8000
+    );
+    if (!res.ok) throw new Error(String(res.status));
+    return (await res.json()) as Team;
+  } catch {
+    return null;
+  }
+}
+
+export async function inviteMember(
+  email: string,
+  role: string = "member"
+): Promise<{ id: string; token: string; email: string; role: string; expires_at: string } | null> {
+  const teamId = useAuthStore.getState().teamId;
+  if (!HAS_LIVE_BACKEND || !teamId) return null;
+  try {
+    const res = await fetchWithTimeout(
+      `${API_BASE}/api/teams/${teamId}/invitations`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, role }),
+      },
+      8000
+    );
+    if (!res.ok) throw new Error(String(res.status));
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function acceptInvite(token: string): Promise<{ accepted: boolean; team_id: string; role: string } | null> {
+  if (!HAS_LIVE_BACKEND) return null;
+  try {
+    const res = await fetchWithTimeout(
+      `${API_BASE}/api/invitations/accept`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+      },
+      8000
+    );
+    if (!res.ok) throw new Error(String(res.status));
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchUsage(): Promise<UsageSummary | null> {
+  if (!HAS_LIVE_BACKEND) return null;
+  try {
+    const res = await fetchWithTimeout(`${API_BASE}/api/usage`, {}, 6000);
+    if (!res.ok) throw new Error(String(res.status));
+    return (await res.json()) as UsageSummary;
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchPlans(): Promise<Plan[]> {
+  if (!HAS_LIVE_BACKEND) return [];
+  try {
+    const res = await fetchWithTimeout(`${API_BASE}/api/billing/plans`, {}, 6000);
+    if (!res.ok) throw new Error(String(res.status));
+    return (await res.json()) as Plan[];
+  } catch {
+    return [];
+  }
 }

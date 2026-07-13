@@ -8,6 +8,22 @@ Web app que convierte reuniones de requerimientos (audio o texto) en un plan de 
 
 ---
 
+## SaaS / Producción
+
+Checklist go-live completo: **[`docs/SAAS_GOLIVE.md`](./docs/SAAS_GOLIVE.md)**
+
+| Capacidad | Resumen |
+|-----------|---------|
+| Auth | Supabase Auth (JWT). El backend valida Bearer + membership. |
+| Multi-tenant | Teams, `team_memberships`, invitaciones y RLS por tenant. |
+| Cuotas / planes | Límites mensuales por plan (`free` → `enterprise`); `GET /api/usage`, `GET /api/billing/plans`. |
+| Demo | `AUTH_DISABLED=true` salta JWT y usa `X-Team-Id` / `DEFAULT_TEAM_ID`. En prod: `false`. |
+| Migración | **`seed/006_saas_multitenant.sql` es obligatoria** para features SaaS (tras `001` y `004`). |
+
+Deploy: frontend en **Netlify**, backend en **Render** (`render.yaml`) o Docker (`backend/Dockerfile` + `docker-compose.yml`).
+
+---
+
 ## El problema
 
 Las reuniones entre áreas de negocio e IT suelen terminar en notas dispersas, Excel o correos ambiguos. Nadie traduce la conversación en tickets concretos, nadie asigna según skills y carga real, y el plan tarda días en existir — si es que existe.
@@ -118,11 +134,12 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJ...
 ```bash
 # En Supabase SQL Editor, ejecutar en orden:
 seed/001_schema.sql
-seed/002_seed_demo.sql
+seed/002_seed_demo.sql      # opcional (datos demo)
 seed/004_error_logs.sql
+seed/006_saas_multitenant.sql   # obligatorio para SaaS
 ```
 
-Detalle completo: [`docs/SUPABASE_SETUP.md`](./docs/SUPABASE_SETUP.md)
+Detalle: [`docs/SUPABASE_SETUP.md`](./docs/SUPABASE_SETUP.md) · Go-live: [`docs/SAAS_GOLIVE.md`](./docs/SAAS_GOLIVE.md)
 
 ---
 
@@ -134,6 +151,9 @@ Detalle completo: [`docs/SUPABASE_SETUP.md`](./docs/SUPABASE_SETUP.md)
 |----------|-------------|
 | `SUPABASE_URL` | URL del proyecto Supabase |
 | `SUPABASE_SERVICE_ROLE_KEY` | Service role (solo backend, nunca en frontend) |
+| `AUTH_DISABLED` | `true` = demo sin JWT; `false` = producción |
+| `SUPABASE_JWT_SECRET` | JWT Secret (Settings → API); requerido si auth está ON |
+| `CORS_ORIGINS` | Orígenes permitidos (`*` solo en demo local) |
 | `OPENAI_API_KEY` | OpenAI — Meeting y Assignment Agent |
 | `ELEVENLABS_API_KEY` | ElevenLabs — transcripción de audio |
 | `N8N_WEBHOOK_URL` | Webhook n8n al aprobar un plan (opcional) |
@@ -145,7 +165,8 @@ Detalle completo: [`docs/SUPABASE_SETUP.md`](./docs/SUPABASE_SETUP.md)
 |----------|-------------|
 | `NEXT_PUBLIC_API_URL` | URL del backend FastAPI |
 | `NEXT_PUBLIC_SUPABASE_URL` | URL Supabase (lectura directa) |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Anon key (con RLS) |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Anon key (con RLS) — **nunca** service_role |
+| `NEXT_PUBLIC_AUTH_DISABLED` | Alinear con backend (`false` en prod) |
 
 ---
 
@@ -174,6 +195,10 @@ Guía paso a paso: [`docs/GUIA_PRUEBA_FLUJO.md`](./docs/GUIA_PRUEBA_FLUJO.md)
 | `PATCH` | `/api/tickets/{id}` | Actualizar estado / assignee / deadline |
 | `POST` | `/api/approve/{requirement_id}` | Aprobar plan + webhook n8n |
 | `GET` | `/api/health` | Salud del backend |
+| `GET` | `/api/me` | Usuario + team actual (auth) |
+| `GET` / `POST` | `/api/teams` | Listar / crear teams |
+| `GET` | `/api/usage` | Uso mensual vs cuotas |
+| `GET` | `/api/billing/plans` | Catálogo de planes |
 
 Lista completa: [`backend/README.md`](./backend/README.md)
 
@@ -182,10 +207,12 @@ Lista completa: [`backend/README.md`](./backend/README.md)
 ## Seguridad
 
 - **API keys** solo en el backend; el frontend nunca las ve.
+- **Auth JWT** (Supabase) + `team_memberships`; en demo, `AUTH_DISABLED=true`.
 - **Structured Outputs** de OpenAI — JSON garantizado por schema, sin parseo frágil.
 - **LLM Firewall** (`backend/llm_firewall.py`) — valida el transcript antes del Meeting Agent: detecta jailbreaks, SQL malicioso, palabras de riesgo y redacta PII (emails, teléfonos, tarjetas).
 - **Anti prompt-injection** — el transcript viaja siempre como mensaje `user`, separado del system prompt.
-- **RLS en Supabase** — el frontend usa anon key; escrituras sensibles pasan por el backend.
+- **RLS en Supabase** — el frontend usa anon key; escrituras sensibles pasan por el backend; multi-tenant vía migración `006`.
+- **Rate limits** — ventana deslizante por IP (`RATE_LIMIT_PER_MINUTE`).
 - **Error tracking** — cada request lleva `X-Request-ID` para correlacionar errores en `error_logs`.
 
 ---
@@ -227,7 +254,8 @@ Guía: [`n8n/GUIA_INTEGRACION.md`](./n8n/GUIA_INTEGRACION.md)
 | [`docs/PRESENTACION_PPT.md`](./docs/PRESENTACION_PPT.md) | 6 slides + Q&A para jueces |
 | [`docs/DATABASE_DICTIONARY.md`](./docs/DATABASE_DICTIONARY.md) | Diccionario de tablas Supabase |
 | [`docs/GUIA_PRUEBA_FLUJO.md`](./docs/GUIA_PRUEBA_FLUJO.md) | Probar el flujo end-to-end |
-| [`backend/README.md`](./backend/README.md) | Backend: endpoints, error tracking, diseño |
+| [`docs/SAAS_GOLIVE.md`](./docs/SAAS_GOLIVE.md) | Checklist go-live SaaS / producción |
+| [`backend/README.md`](./backend/README.md) | Backend: auth, cuotas, endpoints, diseño |
 | [`seed/README.md`](./seed/README.md) | SQL, transcripts demo, outputs cacheados |
 
 ---
@@ -237,11 +265,11 @@ Guía: [`n8n/GUIA_INTEGRACION.md`](./n8n/GUIA_INTEGRACION.md)
 | Componente | Plataforma recomendada |
 |------------|------------------------|
 | Frontend | **Netlify** — ver [`frontend/netlify.toml`](./frontend/netlify.toml) |
-| Backend | **Render** o **Railway** — `uvicorn main:app --host 0.0.0.0 --port $PORT` |
+| Backend | **Render** (`render.yaml`) o Docker (`backend/Dockerfile`) |
 | DB | **Supabase** (ya en la nube) |
 | Emails | **n8n cloud** |
 
-Después del deploy, configurar `NEXT_PUBLIC_API_URL` en Netlify apuntando al backend público.
+Después del deploy, configurar `NEXT_PUBLIC_API_URL` en Netlify apuntando al backend público. Checklist: [`docs/SAAS_GOLIVE.md`](./docs/SAAS_GOLIVE.md).
 
 ---
 
@@ -251,8 +279,17 @@ Después del deploy, configurar `NEXT_PUBLIC_API_URL` en Netlify apuntando al ba
 
 ---
 
+## Estado
+
+- Demo / hackathon: frontend en modo demo + backend opcional con `AUTH_DISABLED=true`.
+- SaaS: auth Supabase, multi-tenant, cuotas/planes y migración `006` listas; Stripe webhook pendiente (schema `team_subscriptions` ya existe).
+- Producción: seguir [`docs/SAAS_GOLIVE.md`](./docs/SAAS_GOLIVE.md).
+
+---
+
 ## Roadmap
 
+- Webhook Stripe → `team_subscriptions` / `plan_tier`
 - Integración Jira / Slack / Teams
 - Re-priorización automática con aprobación humana
 - Análisis histórico de incumplimiento

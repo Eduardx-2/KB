@@ -1,16 +1,58 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { Sparkles, Plus, Sun, Moon } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
+import { useState } from "react";
+import {
+  Sparkles,
+  Plus,
+  Sun,
+  Moon,
+  LogOut,
+  ChevronDown,
+  Check,
+} from "lucide-react";
 import { NAV_ITEMS } from "./nav-items";
 import { ConnectionBadge } from "./connection-badge";
 import { useTheme } from "./theme-provider";
+import { useAuthStore } from "@/lib/auth-store";
+import { AUTH_DISABLED } from "@/lib/supabase";
+import { fetchWorkspace } from "@/lib/api";
+import { useAppStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
+  const router = useRouter();
   const { theme, toggle } = useTheme();
+  const user = useAuthStore((s) => s.user);
+  const teams = useAuthStore((s) => s.teams);
+  const teamId = useAuthStore((s) => s.teamId);
+  const setTeamId = useAuthStore((s) => s.setTeamId);
+  const logout = useAuthStore((s) => s.logout);
+  const [teamOpen, setTeamOpen] = useState(false);
+
+  const activeTeam = teams.find((t) => t.id === teamId) ?? teams[0];
+
+  async function switchTeam(id: string) {
+    setTeamId(id);
+    setTeamOpen(false);
+    try {
+      const { members, projects, requirements, tickets, mode } = await fetchWorkspace();
+      if (mode === "live") {
+        useAppStore.getState().setWorkspace({ members, projects, requirements, tickets });
+      }
+    } catch {
+      // silencioso
+    }
+    onNavigate?.();
+  }
+
+  async function handleLogout() {
+    await logout();
+    onNavigate?.();
+    router.replace("/login");
+  }
 
   return (
     <div className="flex h-full w-64 flex-col bg-neutral-950 text-neutral-100">
@@ -23,6 +65,34 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           <p className="text-[11px] text-neutral-500">AI PM Copilot</p>
         </div>
       </div>
+
+      {!AUTH_DISABLED && teams.length > 0 && (
+        <div className="relative px-3 pt-4">
+          <button
+            type="button"
+            onClick={() => setTeamOpen((o) => !o)}
+            className="flex w-full items-center justify-between gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-left text-sm transition hover:bg-white/10"
+          >
+            <span className="truncate font-medium">{activeTeam?.name ?? "Workspace"}</span>
+            <ChevronDown className={cn("size-3.5 shrink-0 text-neutral-500 transition", teamOpen && "rotate-180")} />
+          </button>
+          {teamOpen && (
+            <div className="absolute left-3 right-3 z-20 mt-1 overflow-hidden rounded-lg border border-white/10 bg-neutral-900 shadow-lg">
+              {teams.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => void switchTeam(t.id)}
+                  className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm text-neutral-300 hover:bg-white/5"
+                >
+                  <span className="truncate">{t.name}</span>
+                  {t.id === teamId && <Check className="size-3.5 text-white" />}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="px-3 pt-5">
         <Link
@@ -64,7 +134,6 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
       <div className="space-y-3 border-t border-white/10 p-4">
         <ConnectionBadge />
 
-        {/* Toggle modo oscuro / claro */}
         <button
           onClick={toggle}
           className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-xs font-medium text-neutral-400 transition hover:bg-white/5 hover:text-neutral-200"
@@ -83,8 +152,24 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           )}
         </button>
 
+        {!AUTH_DISABLED && user && (
+          <div className="space-y-1.5 px-1">
+            <p className="truncate text-xs text-neutral-400" title={user.email}>
+              {user.email}
+            </p>
+            <button
+              type="button"
+              onClick={() => void handleLogout()}
+              className="flex w-full items-center gap-2 rounded-lg px-1.5 py-1.5 text-xs font-medium text-neutral-500 transition hover:bg-white/5 hover:text-neutral-200"
+            >
+              <LogOut className="size-3.5" />
+              Cerrar sesión
+            </button>
+          </div>
+        )}
+
         <p className="px-1 text-[11px] leading-relaxed text-neutral-600">
-          Cursor Buildathon El Salvador · Jul 2026
+          Meeting-to-Tickets · SaaS
         </p>
       </div>
     </div>

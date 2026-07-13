@@ -23,6 +23,22 @@ class Settings(BaseSettings):
     STT_LANGUAGE: str = "es"
     APP_VERSION: str = "v2"
 
+    # SaaS / auth
+    AUTH_DISABLED: bool = False
+    SUPABASE_JWT_SECRET: str = ""
+    DEFAULT_TEAM_ID: str = ""
+    CORS_ORIGINS: str = "*"  # comma-separated
+    RATE_LIMIT_PER_MINUTE: int = 60
+    MAX_UPLOAD_BYTES: int = 25_000_000  # 25MB
+    N8N_WEBHOOK_SECRET: str = ""
+    ENVIRONMENT: str = "development"  # development|staging|production
+
+    # Stripe (optional — billing stubs return 501 when empty)
+    STRIPE_SECRET_KEY: str = ""
+    STRIPE_WEBHOOK_SECRET: str = ""
+    STRIPE_PRICE_STARTER: str = ""
+    STRIPE_PRICE_PRO: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:
