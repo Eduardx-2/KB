@@ -2,7 +2,7 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { SEED_MEMBERS, SEED_AGENT_LOGS, buildSeedData } from "./mock-data";
+import { SEED_MEMBERS, SEED_AGENT_LOGS, buildSeedData, SEED_PROJECTS } from "./mock-data";
 import type {
   Member,
   Project,
@@ -55,7 +55,7 @@ export const useAppStore = create<AppState>()(
   persist(
     (set, get) => ({
       members: SEED_MEMBERS,
-      projects: [],
+      projects: SEED_PROJECTS,
       requirements: seed.requirements,
       tickets: seed.tickets,
       agentLogs: SEED_AGENT_LOGS,
@@ -122,6 +122,8 @@ export const useAppStore = create<AppState>()(
             priority: t.priority,
             estimate_hours: t.estimate_hours,
             required_skill: t.required_skill,
+            work_phase: t.work_phase ?? null,
+            acceptance_criteria: t.acceptance_criteria ?? null,
             risk_pct: 0,
             assignee_id: null,
             status: "backlog" as TicketStatus,
@@ -188,6 +190,7 @@ export const useAppStore = create<AppState>()(
         const fresh = buildSeedData();
         set({
           members: SEED_MEMBERS,
+          projects: SEED_PROJECTS,
           requirements: fresh.requirements,
           tickets: fresh.tickets,
           agentLogs: SEED_AGENT_LOGS,

@@ -13,6 +13,7 @@ export function KanbanColumn({
   members,
   onOpenTicket,
   onAddTicket,
+  subtaskCounts,
 }: {
   status: TicketStatus;
   label: string;
@@ -20,6 +21,7 @@ export function KanbanColumn({
   members: Member[];
   onOpenTicket: (ticket: Ticket) => void;
   onAddTicket?: (status: TicketStatus) => void;
+  subtaskCounts?: Map<string, number>;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
 
@@ -56,6 +58,7 @@ export function KanbanColumn({
             ticket={t}
             assignee={members.find((m) => m.id === t.assignee_id)}
             onOpen={() => onOpenTicket(t)}
+            subtaskCount={subtaskCounts?.get(t.id) ?? 0}
           />
         ))}
         {tickets.length === 0 && (

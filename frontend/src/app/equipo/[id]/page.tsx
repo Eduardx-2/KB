@@ -232,12 +232,19 @@ export default function DevDashboardPage() {
         title={member.name}
         description={member.role}
         actions={
-          <Link href="/equipo">
-            <Button size="sm" variant="ghost">
-              <ArrowLeft className="size-4" />
-              Equipo
-            </Button>
-          </Link>
+          <>
+            <Link href={`/equipo/${params.id}/perfil`}>
+              <Button size="sm" variant="outline">
+                Perfil Knowledge Ops
+              </Button>
+            </Link>
+            <Link href="/equipo">
+              <Button size="sm" variant="ghost">
+                <ArrowLeft className="size-4" />
+                Equipo
+              </Button>
+            </Link>
+          </>
         }
       />
 

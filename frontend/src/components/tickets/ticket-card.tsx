@@ -6,17 +6,19 @@ import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { PriorityBadge } from "@/components/tickets/priority-badge";
 import { RiskBadge } from "@/components/tickets/risk-badge";
-import { SKILL_LABELS, cn } from "@/lib/utils";
+import { skillLabel, WORK_PHASE_LABELS, cn } from "@/lib/utils";
 import type { Member, Ticket } from "@/lib/types";
 
 export function TicketCard({
   ticket,
   assignee,
   onOpen,
+  subtaskCount = 0,
 }: {
   ticket: Ticket;
   assignee?: Member;
   onOpen: () => void;
+  subtaskCount?: number;
 }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: ticket.id,
@@ -51,8 +53,18 @@ export function TicketCard({
 
       <div className="mt-3 flex flex-wrap items-center gap-1.5">
         <PriorityBadge priority={ticket.priority} />
-        <Badge className="bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">{SKILL_LABELS[ticket.required_skill]}</Badge>
+        <Badge className="bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">{skillLabel(ticket.required_skill)}</Badge>
+        {ticket.work_phase && (
+          <Badge className="bg-violet-50 text-violet-700 dark:bg-violet-950 dark:text-violet-300">
+            {WORK_PHASE_LABELS[ticket.work_phase]}
+          </Badge>
+        )}
         {ticket.risk_pct > 0 && <RiskBadge pct={ticket.risk_pct} reasoning={ticket.reasoning} />}
+        {subtaskCount > 0 && (
+          <Badge className="bg-sky-50 text-sky-700 dark:bg-sky-950 dark:text-sky-300">
+            {subtaskCount} subtarea{subtaskCount === 1 ? "" : "s"}
+          </Badge>
+        )}
       </div>
 
       <div className="mt-3 flex items-center justify-between">

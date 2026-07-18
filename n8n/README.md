@@ -13,6 +13,7 @@ Automatizaciones post-aprobación para el proyecto **Meeting to Tickets PM** (Cu
 - [WF2 — Deadlines vencidas](#wf2--deadlines-vencidas)
 - [WF3 — Tickets estancados](#wf3--tickets-estancados)
 - [WF4 — Digest semanal del manager](#wf4--digest-semanal-del-manager)
+- [WF5 — Reorg proposals (Knowledge Ops)](#wf5--reorg-proposals-knowledge-ops)
 - [Probar con curl](#probar-con-curl)
 - [Tabla notifications](#tabla-notifications)
 - [Troubleshooting](#troubleshooting)
@@ -252,6 +253,21 @@ GET /rest/v1/ticket_status_events
 - Footer: horas comprometidas vs entregadas vs pendientes
 
 > El workflow busca automáticamente todos los members con `is_manager = true` y les envía el digest.
+
+---
+
+## WF5 — Reorg proposals (Knowledge Ops)
+
+**Archivo:** `05-reorg-proposals.json`  
+**Trigger:** Webhook POST (mismo `N8N_WEBHOOK_URL` del backend, eventos con campo `event`)
+
+| Evento | Cuándo |
+|--------|--------|
+| `reorg.pending_boss` | Agente crea propuesta tras ausencia/sobrecarga |
+| `reorg.approved` | Jefe aprueba y tickets se reescriben |
+| `reorg.rejected` | Jefe rechaza la propuesta |
+
+El backend envía `{ "event": "reorg.pending_boss", "proposal_id", "team_id", "member_id", "summary_md" }`.
 
 ---
 

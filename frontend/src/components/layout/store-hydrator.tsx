@@ -31,6 +31,9 @@ export function StoreHydrator() {
     if (!HAS_LIVE_BACKEND) return;
 
     let cancelled = false;
+    // No mostrar miembros demo (Ana/Beto con carga falsa) mientras llega el workspace real.
+    useAppStore.getState().setMembers([]);
+
     fetchWorkspace()
       .then(({ members, projects, requirements, tickets, mode }) => {
         if (cancelled) return;

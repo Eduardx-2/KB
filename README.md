@@ -19,6 +19,7 @@ Checklist go-live completo: **[`docs/SAAS_GOLIVE.md`](./docs/SAAS_GOLIVE.md)**
 | Cuotas / planes | Límites mensuales por plan (`free` → `enterprise`); `GET /api/usage`, `GET /api/billing/plans`. |
 | Demo | `AUTH_DISABLED=true` salta JWT y usa `X-Team-Id` / `DEFAULT_TEAM_ID`. En prod: `false`. |
 | Migración | **`seed/006_saas_multitenant.sql` es obligatoria** para features SaaS (tras `001` y `004`). |
+| Knowledge Ops | Perfiles developer, docs MD, grafo + RAG, tickets granulares, reorg con aprobación — ver [`docs/KNOWLEDGE_OPS.md`](./docs/KNOWLEDGE_OPS.md) y migraciones `009`–`010`. |
 
 Deploy: frontend en **Netlify**, backend en **Render** (`render.yaml`) o Docker (`backend/Dockerfile` + `docker-compose.yml`).
 

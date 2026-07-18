@@ -5,6 +5,32 @@ export function cn(...inputs: ClassValue[]) {
   return clsx(inputs);
 }
 
+export const WORK_PHASE_LABELS: Record<import("./types").WorkPhase, string> = {
+  discovery: "Discovery",
+  ux: "UX",
+  design: "Diseño",
+  frontend: "Frontend",
+  backend: "Backend",
+  db: "Base de datos",
+  qa: "QA",
+  deploy: "Deploy",
+};
+
+export const DUTY_TYPE_LABELS: Record<import("./types").DutyType, string> = {
+  recurring: "Recurrente",
+  monitoring: "Monitoreo",
+  oncall: "On-call",
+  admin: "Admin",
+};
+
+export const REORG_STATUS_LABELS: Record<import("./types").ReorgStatus, string> = {
+  draft: "Borrador",
+  pending_boss: "Pendiente jefe",
+  approved: "Aprobada",
+  rejected: "Rechazada",
+  applied: "Aplicada",
+};
+
 export function riskLevel(pct: number): "low" | "medium" | "high" {
   if (pct < 40) return "low";
   if (pct <= 70) return "medium";
@@ -69,7 +95,24 @@ export const SKILL_LABELS: Record<Skill, string> = {
   data: "Data",
   qa: "QA",
   devops: "DevOps",
+  csharp: "C# / .NET",
+  sql: "SQL",
+  erp_exactus: "ERP Exactus",
+  erp_softland: "ERP Softland",
+  filament: "Filament",
+  metabase: "Metabase",
+  networking: "Redes",
+  docker: "Docker",
+  apps: "Apps internas",
+  web_design: "Web design",
+  maxxi_web: "Maxxi Web",
 };
+
+/** Label seguro si llega un skill nuevo desde el backend. */
+export function skillLabel(skill: string | null | undefined): string {
+  if (!skill) return "—";
+  return (SKILL_LABELS as Record<string, string>)[skill] ?? skill;
+}
 
 export function loadColorClasses(load: number) {
   if (load < 40) return { bar: "bg-emerald-500", text: "text-emerald-600 dark:text-emerald-400" };

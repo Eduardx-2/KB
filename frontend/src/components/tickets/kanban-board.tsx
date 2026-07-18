@@ -25,6 +25,15 @@ export function KanbanBoard({
     useSensor(KeyboardSensor)
   );
 
+  // Board shows only root tickets; subtareas viven dentro del detalle.
+  const roots = tickets.filter((t) => !t.parent_ticket_id);
+  const childCount = new Map<string, number>();
+  for (const t of tickets) {
+    if (t.parent_ticket_id) {
+      childCount.set(t.parent_ticket_id, (childCount.get(t.parent_ticket_id) ?? 0) + 1);
+    }
+  }
+
   function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event;
     if (!over) return;
@@ -43,10 +52,11 @@ export function KanbanBoard({
             key={status}
             status={status}
             label={STATUS_LABELS[status]}
-            tickets={tickets.filter((t) => t.status === status)}
+            tickets={roots.filter((t) => t.status === status)}
             members={members}
             onOpenTicket={onOpenTicket}
             onAddTicket={onAddTicket}
+            subtaskCounts={childCount}
           />
         ))}
       </div>

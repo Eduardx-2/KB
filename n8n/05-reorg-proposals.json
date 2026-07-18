@@ -1,0 +1,91 @@
+{
+  "name": "WF5 — Reorg Proposals (Knowledge Ops)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "reorg-events",
+        "responseMode": "onReceived",
+        "responseData": "{\"received\":true}",
+        "options": {}
+      },
+      "id": "wf5-reorg-001",
+      "name": "Webhook Reorg Events",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [200, 300],
+      "webhookId": "reorg-knowledge-ops"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json;\nconst event = body.event || 'reorg.unknown';\nconst proposalId = body.proposal_id;\nconst memberId = body.member_id;\nconst summary = body.summary_md || '';\nreturn [{ json: {\n  event,\n  proposal_id: proposalId,\n  team_id: body.team_id,\n  member_id: memberId,\n  summary_md: summary,\n  manager_email: body.manager_email || $env.MANAGER_EMAIL || '',\n  raw: body\n}}];"
+      },
+      "id": "wf5-reorg-002",
+      "name": "Normalizar Evento Reorg",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "cond-pending",
+              "leftValue": "={{ $json.event }}",
+              "rightValue": "reorg.pending_boss",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "wf5-reorg-003",
+      "name": "Es Pending Boss?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "subject": "=Reorg pendiente — propuesta {{ $json.proposal_id }}",
+        "message": "=El agente propuso reorganizar tickets por ausencia/sobrecarga.\n\nResumen:\n{{ $json.summary_md }}\n\nRevisa en la app: /reorg",
+        "options": {}
+      },
+      "id": "wf5-reorg-004",
+      "name": "Email Jefe IT (stub)",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [860, 220],
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { logged: true, event: $json.event, proposal_id: $json.proposal_id } }];"
+      },
+      "id": "wf5-reorg-005",
+      "name": "Log Aprobado/Rechazado",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [860, 400]
+    }
+  ],
+  "connections": {
+    "Webhook Reorg Events": {
+      "main": [[{ "node": "Normalizar Evento Reorg", "type": "main", "index": 0 }]]
+    },
+    "Normalizar Evento Reorg": {
+      "main": [[{ "node": "Es Pending Boss?", "type": "main", "index": 0 }]]
+    },
+    "Es Pending Boss?": {
+      "main": [
+        [{ "node": "Email Jefe IT (stub)", "type": "main", "index": 0 }],
+        [{ "node": "Log Aprobado/Rechazado", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "meta": { "templateCredsSetupCompleted": true }
+}

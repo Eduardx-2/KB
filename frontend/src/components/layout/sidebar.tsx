@@ -17,7 +17,7 @@ import { ConnectionBadge } from "./connection-badge";
 import { useTheme } from "./theme-provider";
 import { useAuthStore } from "@/lib/auth-store";
 import { AUTH_DISABLED } from "@/lib/supabase";
-import { fetchWorkspace } from "@/lib/api";
+import { fetchWorkspace, HAS_LIVE_BACKEND } from "@/lib/api";
 import { useAppStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
@@ -30,7 +30,14 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const teamId = useAuthStore((s) => s.teamId);
   const setTeamId = useAuthStore((s) => s.setTeamId);
   const logout = useAuthStore((s) => s.logout);
+  const members = useAppStore((s) => s.members);
   const [teamOpen, setTeamOpen] = useState(false);
+
+  const showReorgNav = !HAS_LIVE_BACKEND || members.some((m) => m.is_manager);
+  const visibleNavItems = NAV_ITEMS.filter((item) => {
+    if ("managerOnly" in item && item.managerOnly) return showReorgNav;
+    return true;
+  });
 
   const activeTeam = teams.find((t) => t.id === teamId) ?? teams[0];
 
@@ -109,7 +116,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         <p className="px-2.5 pb-2 text-[11px] font-medium uppercase tracking-wider text-neutral-600">
           Navegación
         </p>
-        {NAV_ITEMS.map((item) => {
+        {visibleNavItems.map((item) => {
           const active = item.exact ? pathname === item.href : pathname.startsWith(item.href);
           const Icon = item.icon;
           return (

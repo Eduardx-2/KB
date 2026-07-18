@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { FileText, Mic, Sparkles, Wand2 } from "lucide-react";
+import { FileText, Mic, Sparkles, Wand2, BookOpen } from "lucide-react";
+import Link from "next/link";
 import { PageHeader } from "@/components/layout/page-header";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -108,10 +109,12 @@ export default function NuevaReunionPage() {
         description: `${meetingOutput.tickets.length} tickets asignados al equipo.`,
       });
       router.push(`/reuniones/${requirementId}`);
-    } catch {
+    } catch (err) {
       const failing = steps.find((s) => s.status === "active");
       if (failing) updateStep(failing.id, "error");
-      setErrorMsg("Algo falló procesando la reunión. Podés reintentar sin perder el texto.");
+      const detail = err instanceof Error ? err.message : "Error desconocido";
+      setErrorMsg(detail);
+      toast.error("No se pudo completar la extracción", { description: detail });
       setProcessing(false);
     }
   }
@@ -122,6 +125,21 @@ export default function NuevaReunionPage() {
         title="Nueva reunión"
         description="Pegá el transcript o grabá el audio. La IA hace el resto: resumen, tickets y asignación."
       />
+
+      <div className="mx-auto max-w-5xl px-4 pt-4 sm:px-8">
+        <div className="flex flex-col gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-2">
+            <BookOpen className="mt-0.5 size-4 shrink-0" />
+            <p>
+              <strong>Antes de asignar:</strong> cada developer debe tener su MD de proyectos/stack en el perfil.
+              Sin eso, el Assignment Agent asigna a ciegas.
+            </p>
+          </div>
+          <Link href="/equipo" className="shrink-0 text-sm font-medium underline underline-offset-2">
+            Ir al equipo →
+          </Link>
+        </div>
+      </div>
 
       <div className="mx-auto grid max-w-5xl gap-6 p-4 sm:p-8 lg:grid-cols-[1.4fr_1fr]">
         <Card className="p-5 sm:p-6">

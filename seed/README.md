@@ -26,7 +26,15 @@ Guía completa: [`docs/SAAS_GOLIVE.md`](../docs/SAAS_GOLIVE.md).
 | 2 | `002_seed_demo.sql` | Datos demo (opcional en prod) |
 | 3 | `004_error_logs.sql` | Error tracking |
 | 4 | `006_saas_multitenant.sql` | **SaaS** — teams, memberships, planes, cuotas, RLS auth |
+| 5 | `008_audit_events.sql` | Auditoría |
+| 6 | `009_knowledge_ops.sql` | **Knowledge Ops** — duties, graph, reorg, RPC embeddings |
+| 7 | `010_knowledge_ops_demo.sql` | Demo Knowledge Ops (opcional) |
+| 8 | `011_empresa_equipo_real.sql` | **Maxxi Group** — Juan, Iván, Erick, Jaime, Christopher |
 
 Opcionales de prueba: `003_endpoint_test_data.sql`, `005_full_flow_demo.sql`.
+
+**Prueba empresa (DB limpia, sin 002):** `001` → `004` → `006` → `008` → `009` → `011`
+
+Knowledge Ops: [`docs/KNOWLEDGE_OPS.md`](../docs/KNOWLEDGE_OPS.md).
 
 Go-live: [`docs/SAAS_GOLIVE.md`](../docs/SAAS_GOLIVE.md).

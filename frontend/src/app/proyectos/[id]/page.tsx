@@ -3,9 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import {
-  ArrowLeft, Calendar, ChevronRight, Layers, Mic, AlertTriangle,
-} from "lucide-react";
+import { ArrowLeft, Calendar, ChevronRight, Layers, Mic, AlertTriangle, BookOpen, Network } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/layout/page-header";
 import { Card } from "@/components/ui/card";
@@ -152,6 +150,18 @@ export default function ProjectDetailPage() {
         description={project.description ?? project.business_area ?? "Proyecto del equipo"}
         actions={
           <>
+            <Link href={`/proyectos/${project.id}/docs`}>
+              <Button size="sm" variant="outline">
+                <BookOpen className="size-4" />
+                Docs
+              </Button>
+            </Link>
+            <Link href={`/proyectos/${project.id}/grafo`}>
+              <Button size="sm" variant="outline">
+                <Network className="size-4" />
+                Grafo
+              </Button>
+            </Link>
             <Link href="/proyectos">
               <Button size="sm" variant="ghost">
                 <ArrowLeft className="size-4" />

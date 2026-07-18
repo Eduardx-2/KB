@@ -19,9 +19,10 @@ from fastapi.responses import JSONResponse
 from openai import OpenAIError
 
 try:
-    from . import audit, billing, quotas, services, tenancy
+    from . import audit, billing, capacity, knowledge, quotas, services, tenancy
     from .auth import AuthContext, get_auth_context, require_role, require_team
     from .config import get_settings
+    from .knowledge_routes import router as knowledge_router
     from .llm_firewall import scan_prompt
     from .rate_limit import RateLimitMiddleware
     from .schemas import (
@@ -34,6 +35,7 @@ try:
         CreateRequirementResponse,
         CreateTeamRequest,
         CreateTicketRequest,
+        CreateProjectRequest,
         HealthResponse,
         InviteAcceptRequest,
         InviteRequest,
@@ -50,11 +52,14 @@ try:
 except ImportError:  # Permite `uvicorn main:app` desde backend/.
     import audit
     import billing
+    import capacity
+    import knowledge
     import quotas
     import services
     import tenancy
     from auth import AuthContext, get_auth_context, require_role, require_team
     from config import get_settings
+    from knowledge_routes import router as knowledge_router
     from llm_firewall import scan_prompt
     from rate_limit import RateLimitMiddleware
     from schemas import (
@@ -67,6 +72,7 @@ except ImportError:  # Permite `uvicorn main:app` desde backend/.
         CreateRequirementResponse,
         CreateTeamRequest,
         CreateTicketRequest,
+        CreateProjectRequest,
         HealthResponse,
         InviteAcceptRequest,
         InviteRequest,
@@ -85,6 +91,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logger = logging.getLogger("app")
 
 app = FastAPI(title="AI Meeting-to-Tickets PM", version=get_settings().APP_VERSION)
+app.include_router(knowledge_router)
 
 # ---------- CORS ----------
 _cors_raw = (get_settings().CORS_ORIGINS or "*").strip()
@@ -209,6 +216,37 @@ def _get_tickets_by_requirement(requirement_id: str) -> list[dict]:
     return res.data or []
 
 
+def _enrich_requirements_with_transcripts(
+    sb, requirements: list[dict]
+) -> list[dict]:
+    """Join meetings.raw_transcript onto requirements for frontend transcript dialog."""
+    if not requirements:
+        return []
+    meeting_ids = [r["meeting_id"] for r in requirements if r.get("meeting_id")]
+    transcripts: dict[str, str] = {}
+    if meeting_ids:
+        rows = (
+            sb.table("meetings")
+            .select("id, raw_transcript")
+            .in_("id", meeting_ids)
+            .execute()
+        ).data or []
+        transcripts = {
+            row["id"]: row.get("raw_transcript") or ""
+            for row in rows
+        }
+    out: list[dict] = []
+    for req in requirements:
+        mid = req.get("meeting_id")
+        out.append(
+            {
+                **req,
+                "raw_transcript": transcripts.get(mid, "") if mid else "",
+            }
+        )
+    return out
+
+
 def _get_skill_codes_by_id() -> dict[str, str]:
     rows = (services.get_supabase().table("skills").select("id, code").execute()).data or []
     return {row["id"]: row["code"] for row in rows}
@@ -263,21 +301,73 @@ def _tickets_with_skill_codes(
     requirement_id: str | None = None,
     project_ids: list[str] | None = None,
 ) -> list[dict]:
-    query = (
-        services.get_supabase()
-        .table("board_tickets")
-        .select("*")
-        .order("created_at", desc=True)
+    """Load tickets with skill codes + hierarchy fields from tickets table (not stale view)."""
+    sb = services.get_supabase()
+    select_full = (
+        "id, requirement_id, project_id, title, description, priority, estimate_hours, "
+        "required_skill_id, risk_pct, assignee_id, assignment_reasoning, status, deadline, "
+        "kanban_order, created_at, updated_at, work_phase, acceptance_criteria, "
+        "parent_ticket_id, scheduled_date, is_greenfield, related_db_tables, depends_on_ticket_ids"
     )
-    if project_id:
-        query = query.eq("project_id", project_id)
-    elif project_ids is not None:
-        if not project_ids:
-            return []
-        query = query.in_("project_id", project_ids)
-    if requirement_id:
-        query = query.eq("requirement_id", requirement_id)
-    return query.execute().data or []
+    select_basic = (
+        "id, requirement_id, project_id, title, description, priority, estimate_hours, "
+        "required_skill_id, risk_pct, assignee_id, assignment_reasoning, status, deadline, "
+        "kanban_order, created_at, updated_at"
+    )
+
+    def _query(select_cols: str):
+        q = sb.table("tickets").select(select_cols).order("created_at", desc=True)
+        if project_id:
+            q = q.eq("project_id", project_id)
+        elif project_ids is not None:
+            if not project_ids:
+                return []
+            q = q.in_("project_id", project_ids)
+        if requirement_id:
+            q = q.eq("requirement_id", requirement_id)
+        return q.execute().data or []
+
+    try:
+        rows = _query(select_full)
+    except Exception:  # noqa: BLE001 — older schema without hierarchy cols
+        logger.debug("tickets hierarchy select failed; using basic columns", exc_info=True)
+        rows = _query(select_basic)
+
+    skill_by_id = {v: k for k, v in _get_skill_ids_by_code().items()}
+    member_ids = [r["assignee_id"] for r in rows if r.get("assignee_id")]
+    name_by_id: dict[str, str] = {}
+    if member_ids:
+        mems = (
+            sb.table("members")
+            .select("id, name")
+            .in_("id", list(set(member_ids)))
+            .execute()
+        ).data or []
+        name_by_id = {m["id"]: m["name"] for m in mems}
+
+    project_ids_seen = list({r["project_id"] for r in rows if r.get("project_id")})
+    project_name_by_id: dict[str, str] = {}
+    if project_ids_seen:
+        projs = (
+            sb.table("projects")
+            .select("id, name")
+            .in_("id", project_ids_seen)
+            .execute()
+        ).data or []
+        project_name_by_id = {p["id"]: p["name"] for p in projs}
+
+    out: list[dict] = []
+    for r in rows:
+        skill_id = r.get("required_skill_id")
+        out.append(
+            {
+                **r,
+                "required_skill": skill_by_id.get(skill_id) if skill_id else None,
+                "assignee_name": name_by_id.get(r["assignee_id"]) if r.get("assignee_id") else None,
+                "project_name": project_name_by_id.get(r["project_id"]) if r.get("project_id") else None,
+            }
+        )
+    return out
 
 
 def _members_with_dynamic_load(members: list[dict]) -> list[dict]:
@@ -305,19 +395,61 @@ def _members_with_dynamic_load(members: list[dict]) -> list[dict]:
     enriched = []
     for member in hydrated:
         stats = by_member.get(member["id"], {"hours": 0, "count": 0})
-        # 80h activas ~= carga completa; se combina con current_load seed/HR.
+        # 80h activas ~= carga completa; solo tickets activos (ignora current_load seed/HR en DB).
         computed_load = min(100, round((stats["hours"] / 80) * 100))
-        effective_load = max(int(member.get("current_load") or 0), computed_load)
         enriched.append(
             {
                 **member,
                 "active_hours": stats["hours"],
                 "active_ticket_count": stats["count"],
-                "effective_load": effective_load,
-                "current_load": effective_load,
+                "effective_load": computed_load,
+                "current_load": computed_load,
             }
         )
-    return enriched
+    enriched_members = capacity.enrich_member_load(enriched)
+    # Sincronizar current_load con effective_load (tickets + duties + ausencias).
+    return [
+        {**m, "current_load": m.get("effective_load", m.get("current_load", 0))}
+        for m in enriched_members
+    ]
+
+
+def _build_member_context(sb, team_id: str) -> dict:
+    """Duties, absences, module ownership for assignment agent."""
+    try:
+        duties = (
+            sb.table("member_duties")
+            .select("member_id, title, duty_type, load_pct, is_active")
+            .eq("team_id", team_id)
+            .eq("is_active", True)
+            .execute()
+        ).data or []
+        absences = (
+            sb.table("member_absences")
+            .select("member_id, start_date, end_date, reason, status")
+            .eq("team_id", team_id)
+            .in_("status", ["approved", "pending"])
+            .execute()
+        ).data or []
+        stakeholders = (
+            sb.table("project_stakeholders")
+            .select("member_id, project_id, role_in_project, importance_pct")
+            .execute()
+        ).data or []
+        project_ids = tenancy.project_ids_for_team(sb, team_id)
+        modules: list[dict] = []
+        if project_ids:
+            modules = (
+                sb.table("project_modules")
+                .select("id, project_id, name, owner_member_id, status")
+                .in_("project_id", project_ids)
+                .eq("status", "active")
+                .execute()
+            ).data or []
+        return {"duties": duties, "absences": absences, "stakeholders": stakeholders, "modules": modules}
+    except Exception:  # noqa: BLE001 — tables may not exist in old DBs
+        logger.debug("member context unavailable", exc_info=True)
+        return {"duties": [], "absences": [], "stakeholders": [], "modules": []}
 
 
 def _fetch_team(team_id: str) -> dict | None:
@@ -754,10 +886,35 @@ def meeting_agent(body: MeetingAgentRequest, auth: TeamAuth):
     )
 
     existing_tickets = _tickets_with_skill_codes(project_id=body.project_id or requirement["project_id"])
+    project_id = body.project_id or requirement["project_id"]
+
+    rag_context = knowledge.retrieve_context(
+        auth.team_id,  # type: ignore[arg-type]
+        project_id,
+        safe_transcript,
+        k=8,
+    )
+
+    org_roster = _members_with_dynamic_load(
+        tenancy.members_for_team(services.get_supabase(), auth.team_id)  # type: ignore[arg-type]
+    )
 
     output = services.run_meeting_agent(
-        safe_transcript, existing_tickets=existing_tickets, team_id=auth.team_id
+        safe_transcript,
+        existing_tickets=existing_tickets,
+        rag_context=rag_context,
+        team_id=auth.team_id,
+        org_roster=org_roster,
     )
+    # Reescribir skills mal etiquetados (Cayena/Exactus UI ≠ Filament/web).
+    normalized_tickets = []
+    for t in output.tickets:
+        fixed = services.normalize_ticket_skill(t.model_dump())
+        if fixed.get("required_skill") != t.required_skill:
+            t = t.model_copy(update={"required_skill": fixed["required_skill"]})
+        normalized_tickets.append(t)
+    output = output.model_copy(update={"tickets": normalized_tickets})
+
     sb = services.get_supabase()
 
     sb.table("requirements").update(
@@ -768,21 +925,27 @@ def meeting_agent(body: MeetingAgentRequest, auth: TeamAuth):
 
     if output.tickets:
         skill_ids_by_code = _get_skill_ids_by_code()
-        rows = [
-            {
-                "requirement_id": body.requirement_id,
-                "project_id": requirement["project_id"],
-                "title": t.title,
-                "description": t.description,
-                "priority": t.priority,
-                "estimate_hours": t.estimate_hours,
-                "required_skill_id": skill_ids_by_code.get(t.required_skill),
-                "status": "backlog",
-                "risk_pct": 0,
-            }
-            for t in output.tickets
-        ]
-        sb.table("tickets").insert(rows).execute()
+        services.persist_granular_tickets(
+            sb,
+            body.requirement_id,
+            project_id,
+            output.tickets,
+            rag_chunks=rag_context.get("chunks"),
+            skill_ids_by_code=skill_ids_by_code,
+        )
+
+        mentioned: list[str] = []
+        for t in output.tickets:
+            mentioned.extend(t.related_db_tables or [])
+            if t.knowledge_evidence:
+                mentioned.append(t.title)
+        knowledge.link_meeting_to_graph(
+            meeting_id,
+            project_id,
+            auth.team_id,  # type: ignore[arg-type]
+            output.summary,
+            mentioned,
+        )
 
     return output
 
@@ -799,11 +962,43 @@ def assignment_agent(body: AssignmentAgentRequest, auth: TeamAuth):
     if not tickets:
         raise HTTPException(status_code=404, detail="No hay tickets para ese requirement_id")
 
+    tickets = [services.normalize_ticket_skill(t) for t in tickets]
+    # Si hay jerarquía, asignar solo subtareas (hojas); las épicas son contenedores.
+    if any(t.get("parent_ticket_id") for t in tickets):
+        tickets = [t for t in tickets if t.get("parent_ticket_id")]
+        if not tickets:
+            raise HTTPException(
+                status_code=400,
+                detail="Hay épicas sin subtareas; creá subtareas antes de asignar",
+            )
+    # Persistir skill corregido si cambió (p.ej. filament → erp_exactus).
+    skill_ids = _get_skill_ids_by_code()
+    for t in tickets:
+        original = t.get("required_skill")
+        # normalize already applied in place via new dict
+        code = t.get("required_skill")
+        skill_id = skill_ids.get(code) if code else None
+        if skill_id and skill_id != t.get("required_skill_id"):
+            sb.table("tickets").update({"required_skill_id": skill_id}).eq("id", t["id"]).execute()
+            t["required_skill_id"] = skill_id
+
     members = _members_with_dynamic_load(tenancy.members_for_team(sb, auth.team_id))  # type: ignore[arg-type]
     if not members:
         raise HTTPException(status_code=404, detail="No hay miembros en la tabla members")
 
-    output = services.run_assignment_agent(tickets, members, team_id=auth.team_id)
+    member_context = _build_member_context(sb, auth.team_id)  # type: ignore[arg-type]
+    member_knowledge = services.build_member_knowledge_context(
+        auth.team_id,  # type: ignore[arg-type]
+        members,
+        tickets,
+    )
+    output = services.run_assignment_agent(
+        tickets,
+        members,
+        member_context=member_context,
+        member_knowledge=member_knowledge,
+        team_id=auth.team_id,
+    )
 
     member_by_name = {m["name"].strip().lower(): m for m in members}
     ticket_by_title = {t["title"].strip().lower(): t for t in tickets}
@@ -918,6 +1113,48 @@ def list_projects(auth: TeamAuth):
     return tenancy.projects_for_team(services.get_supabase(), auth.team_id)  # type: ignore[arg-type]
 
 
+@app.post("/api/projects", status_code=201)
+def create_project(body: CreateProjectRequest, auth: TeamAuth):
+    """Crea un proyecto en el team activo."""
+    sb = services.get_supabase()
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Nombre de proyecto requerido")
+    code = (body.code or "").strip() or None
+    if body.owner_id:
+        tenancy.assert_team_owns_member(sb, auth.team_id, body.owner_id)  # type: ignore[arg-type]
+    payload = {
+        "team_id": auth.team_id,
+        "name": name,
+        "code": code,
+        "description": body.description,
+        "business_area": body.business_area,
+        "status": body.status,
+        "owner_id": body.owner_id,
+    }
+    try:
+        res = sb.table("projects").insert(payload).execute()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("create_project failed")
+        detail = str(exc)
+        if "unique" in detail.lower() or "duplicate" in detail.lower():
+            raise HTTPException(status_code=409, detail="Ya existe un proyecto con ese código") from exc
+        raise HTTPException(status_code=500, detail="No se pudo crear el proyecto") from exc
+    project = res.data[0]
+    if body.owner_id:
+        try:
+            sb.table("project_members").upsert(
+                {
+                    "project_id": project["id"],
+                    "member_id": body.owner_id,
+                    "role": "owner",
+                }
+            ).execute()
+        except Exception:  # noqa: BLE001
+            logger.debug("project_members upsert skipped", exc_info=True)
+    return project
+
+
 # ---------- 8. Workspace/proyecto/tickets/comentarios ----------
 
 @app.get("/api/workspace")
@@ -940,6 +1177,7 @@ def workspace(auth: TeamAuth):
             .data
             or []
         )
+        requirements = _enrich_requirements_with_transcripts(sb, requirements)
     tickets = _tickets_with_skill_codes(project_ids=project_ids)
     return {"members": members, "projects": projects, "requirements": requirements, "tickets": tickets}
 
@@ -957,6 +1195,7 @@ def project_work(project_id: str, auth: TeamAuth):
         .data
         or []
     )
+    requirements = _enrich_requirements_with_transcripts(sb, requirements)
     meetings = (
         sb.table("meetings")
         .select("id, primary_project_id, title, status, source, recorded_at, created_at")
@@ -976,6 +1215,13 @@ def create_ticket(body: CreateTicketRequest, auth: TeamAuth):
     requirement = _get_requirement_or_404(body.requirement_id, auth.team_id)
     project_id = body.project_id or requirement["project_id"]
     tenancy.assert_team_owns_project(sb, auth.team_id, project_id)  # type: ignore[arg-type]
+    if body.assignee_id:
+        tenancy.assert_team_owns_member(sb, auth.team_id, body.assignee_id)  # type: ignore[arg-type]
+    if body.parent_ticket_id:
+        parent = tenancy.assert_team_owns_ticket(sb, auth.team_id, body.parent_ticket_id)  # type: ignore[arg-type]
+        if parent.get("requirement_id") != body.requirement_id:
+            raise HTTPException(status_code=400, detail="La subtarea debe pertenecer al mismo requirement")
+        project_id = parent.get("project_id") or project_id
     skill_id = _get_skill_ids_by_code().get(body.required_skill)
     payload = {
         "requirement_id": body.requirement_id,
@@ -988,6 +1234,7 @@ def create_ticket(body: CreateTicketRequest, auth: TeamAuth):
         "status": body.status,
         "assignee_id": body.assignee_id,
         "deadline": body.deadline,
+        "parent_ticket_id": body.parent_ticket_id,
         "risk_pct": 0,
         "assignment_reasoning": "Creado manualmente por el manager.",
     }

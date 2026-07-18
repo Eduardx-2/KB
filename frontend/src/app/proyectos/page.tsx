@@ -2,20 +2,24 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
+import { toast } from "sonner";
 import {
   CheckCircle2, Clock, ChevronDown, ChevronUp, ChevronRight,
-  Layers, TriangleAlert, Users2, TrendingUp, ExternalLink,
+  Layers, TriangleAlert, Users2, TrendingUp, ExternalLink, Plus,
 } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Dialog } from "@/components/ui/dialog";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
 import { RequirementStatusBadge } from "@/components/requirements/status-badge";
 import { PriorityBadge } from "@/components/tickets/priority-badge";
 import { useAppStore } from "@/lib/store";
+import { createProject } from "@/lib/api";
 import { SKILL_LABELS, STATUS_LABELS, loadColorClasses, cn } from "@/lib/utils";
 import type { Member, Requirement, Ticket } from "@/lib/types";
 
@@ -367,8 +371,38 @@ export default function ProyectosPage() {
   const requirements = useAppStore((s) => s.requirements);
   const tickets = useAppStore((s) => s.tickets);
   const members = useAppStore((s) => s.members);
+  const setWorkspace = useAppStore((s) => s.setWorkspace);
 
   const [view, setView] = useState<"projects" | "team">("projects");
+  const [createOpen, setCreateOpen] = useState(false);
+  const [projName, setProjName] = useState("");
+  const [projCode, setProjCode] = useState("");
+  const [projDesc, setProjDesc] = useState("");
+  const [creating, setCreating] = useState(false);
+
+  async function handleCreateProject() {
+    if (!projName.trim()) return;
+    setCreating(true);
+    try {
+      const { project } = await createProject({
+        name: projName.trim(),
+        code: projCode.trim() || undefined,
+        description: projDesc.trim() || undefined,
+      });
+      if (project) {
+        setWorkspace({ projects: [project, ...projects.filter((p) => p.id !== project.id)] });
+        toast.success("Proyecto creado");
+        setCreateOpen(false);
+        setProjName("");
+        setProjCode("");
+        setProjDesc("");
+      } else {
+        toast.error("No se pudo crear el proyecto (¿backend vivo?)");
+      }
+    } finally {
+      setCreating(false);
+    }
+  }
 
   const sortedProjects = useMemo(
     () => [...projects].sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? "")),
@@ -407,6 +441,12 @@ export default function ProyectosPage() {
       <PageHeader
         title="Vista de proyectos"
         description="Estado real de cada proyecto: quién hace qué, cuánto falta y dónde está el riesgo."
+        actions={
+          <Button size="sm" onClick={() => setCreateOpen(true)}>
+            <Plus className="size-4" />
+            Nuevo proyecto
+          </Button>
+        }
       />
 
       <div className="mx-auto max-w-5xl space-y-8 p-4 sm:p-8">
@@ -502,6 +542,40 @@ export default function ProyectosPage() {
           </section>
         )}
       </div>
+
+      <Dialog open={createOpen} onClose={() => setCreateOpen(false)} className="max-w-md">
+        <h2 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">Nuevo proyecto</h2>
+        <p className="mt-1 text-sm text-neutral-500">Creá un contenedor de trabajo antes de la reunión.</p>
+        <div className="mt-4 space-y-3">
+          <input
+            className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm outline-none focus:border-neutral-400 dark:border-neutral-700 dark:bg-neutral-900"
+            placeholder="Nombre (ej. Cayena producción)"
+            value={projName}
+            onChange={(e) => setProjName(e.target.value)}
+          />
+          <input
+            className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm outline-none focus:border-neutral-400 dark:border-neutral-700 dark:bg-neutral-900"
+            placeholder="Código corto (opcional, ej. CAYENA)"
+            value={projCode}
+            onChange={(e) => setProjCode(e.target.value)}
+          />
+          <textarea
+            className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm outline-none focus:border-neutral-400 dark:border-neutral-700 dark:bg-neutral-900"
+            rows={3}
+            placeholder="Descripción (opcional)"
+            value={projDesc}
+            onChange={(e) => setProjDesc(e.target.value)}
+          />
+        </div>
+        <div className="mt-5 flex justify-end gap-2">
+          <Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>
+            Cancelar
+          </Button>
+          <Button size="sm" onClick={handleCreateProject} loading={creating} disabled={!projName.trim()}>
+            Crear
+          </Button>
+        </div>
+      </Dialog>
     </div>
   );
 }

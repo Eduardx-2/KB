@@ -20,10 +20,18 @@ def assert_team_owns_project(sb: Client, team_id: str, project_id: str) -> dict:
 
 
 def assert_team_owns_requirement(sb: Client, team_id: str, requirement_id: str) -> dict:
-    """Requirement → project → team."""
+    """Requirement → project → team.
+
+    Disambiguate the embed: requirements has two FKs to projects
+    (project_id and origin_project_id). PostgREST returns PGRST201 without
+    an explicit relationship hint.
+    """
     res = (
         sb.table("requirements")
-        .select("id, project_id, meeting_id, title, summary, status, projects!inner(team_id)")
+        .select(
+            "id, project_id, meeting_id, title, summary, status, "
+            "projects!requirements_project_id_fkey!inner(team_id)"
+        )
         .eq("id", requirement_id)
         .eq("projects.team_id", team_id)
         .limit(1)
@@ -64,6 +72,20 @@ def assert_team_owns_ticket(sb: Client, team_id: str, ticket_id: str) -> dict:
         "status": row.get("status"),
         "assignee_id": row.get("assignee_id"),
     }
+
+
+def assert_team_owns_member(sb: Client, team_id: str, member_id: str) -> dict:
+    res = (
+        sb.table("members")
+        .select("id, team_id, name, role, email, current_load, is_manager")
+        .eq("id", member_id)
+        .eq("team_id", team_id)
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Miembro no encontrado")
+    return res.data[0]
 
 
 def members_for_team(sb: Client, team_id: str) -> list[dict]:

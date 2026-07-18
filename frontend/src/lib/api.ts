@@ -2,10 +2,32 @@ import { useAuthStore } from "./auth-store";
 import { getAccessToken } from "./supabase";
 import { useAppStore } from "./store";
 import { simulateAssignmentAgent, simulateMeetingAgent } from "./mock-engine";
+import {
+  mockGetMemberDuties,
+  mockCreateMemberDuty,
+  mockDeleteMemberDuty,
+  mockGetMemberAbsences,
+  mockCreateMemberAbsence,
+  mockGetMemberCapacity,
+  mockUpdateMemberCapacity,
+  mockGetProjectModules,
+  mockCreateProjectModule,
+  mockUpdateProjectModule,
+  mockGetProjectStakeholders,
+  mockCreateProjectStakeholder,
+  mockUploadProjectDoc,
+  mockFetchProjectKnowledge,
+  mockGetReorgProposals,
+  mockDecideReorgProposal,
+  mockTriggerReorgAgent,
+  mockFetchMemberDocs,
+  mockSaveMemberDocs,
+} from "./mock-engine";
 import { sleep } from "./utils";
 import type {
   AssignmentAgentOutput,
   CreateTicketInput,
+  CreateProjectInput,
   ErrorLog,
   HealthState,
   MeetingAgentOutput,
@@ -18,6 +40,16 @@ import type {
   Ticket,
   TicketComment,
   UsageSummary,
+  MemberDuty,
+  MemberAbsence,
+  MemberCapacity,
+  ProjectModule,
+  ProjectStakeholder,
+  KnowledgeSummary,
+  MemberDocs,
+  MemberProjectNote,
+  ReorgProposal,
+  DutyType,
 } from "./types";
 
 /**
@@ -108,6 +140,12 @@ function normalizeTicket(raw: Record<string, unknown>): Ticket {
     status: (raw.status as Ticket["status"]) ?? "backlog",
     deadline: raw.deadline ? String(raw.deadline) : null,
     team_id: String(raw.team_id ?? "live"),
+    work_phase: (raw.work_phase as Ticket["work_phase"]) ?? null,
+    acceptance_criteria: raw.acceptance_criteria ? String(raw.acceptance_criteria) : null,
+    parent_ticket_id: raw.parent_ticket_id ? String(raw.parent_ticket_id) : null,
+    scheduled_date: raw.scheduled_date ? String(raw.scheduled_date) : null,
+    is_greenfield: raw.is_greenfield != null ? Boolean(raw.is_greenfield) : undefined,
+    related_db_tables: Array.isArray(raw.related_db_tables) ? (raw.related_db_tables as string[]) : null,
   };
 }
 
@@ -140,25 +178,41 @@ export async function checkHealth(): Promise<HealthState> {
   }
 }
 
+async function readErrorDetail(res: Response): Promise<string> {
+  try {
+    const data = await res.json();
+    if (typeof data?.detail === "string") return data.detail;
+    if (Array.isArray(data?.detail)) return JSON.stringify(data.detail);
+    return JSON.stringify(data);
+  } catch {
+    return res.statusText || String(res.status);
+  }
+}
+
 export async function transcribeAudio(file: Blob): Promise<{ text: string; mode: RunMode }> {
   const start = performance.now();
   if (HAS_LIVE_BACKEND) {
-    try {
-      const form = new FormData();
-      form.append("file", file, "grabacion.webm");
-      const res = await fetchWithTimeout(`${API_BASE}/api/transcribe`, { method: "POST", body: form }, 20000);
-      if (!res.ok) throw new Error(String(res.status));
-      const data = await res.json();
+    const form = new FormData();
+    form.append("file", file, "grabacion.webm");
+    // Audio largo (~8–15 min) puede tardar >20s en ElevenLabs; no abortar antes.
+    const res = await fetchWithTimeout(`${API_BASE}/api/transcribe`, { method: "POST", body: form }, 180000);
+    if (!res.ok) {
       useAppStore.getState().pushAgentLog({
         agent: "transcribe",
         latency_ms: Math.round(performance.now() - start),
         model: "scribe_v1",
-        ok: true,
+        ok: false,
       });
-      return { text: data.text, mode: "live" };
-    } catch {
-      // sigue a la simulación de abajo
+      throw new Error(`Transcripción falló (${res.status}): ${await readErrorDetail(res)}`);
     }
+    const data = await res.json();
+    useAppStore.getState().pushAgentLog({
+      agent: "transcribe",
+      latency_ms: Math.round(performance.now() - start),
+      model: "scribe_v1",
+      ok: true,
+    });
+    return { text: data.text, mode: "live" };
   }
 
   await sleep(1400);
@@ -183,28 +237,32 @@ export async function runMeetingAgent(
 ): Promise<{ output: MeetingAgentOutput; mode: RunMode }> {
   const start = performance.now();
   if (HAS_LIVE_BACKEND) {
-    try {
-      const res = await fetchWithTimeout(
-        `${API_BASE}/api/agents/meeting`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ transcript, requirement_id: requirementId, project_id: projectId }),
-        },
-        15000
-      );
-      if (!res.ok) throw new Error(String(res.status));
-      const output: MeetingAgentOutput = await res.json();
+    const res = await fetchWithTimeout(
+      `${API_BASE}/api/agents/meeting`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transcript, requirement_id: requirementId, project_id: projectId }),
+      },
+      120000
+    );
+    if (!res.ok) {
       useAppStore.getState().pushAgentLog({
         agent: "meeting",
         latency_ms: Math.round(performance.now() - start),
         model: "gpt-4o-mini",
-        ok: true,
+        ok: false,
       });
-      return { output, mode: "live" };
-    } catch {
-      // sigue a la simulación
+      throw new Error(`Meeting Agent falló (${res.status}): ${await readErrorDetail(res)}`);
     }
+    const output: MeetingAgentOutput = await res.json();
+    useAppStore.getState().pushAgentLog({
+      agent: "meeting",
+      latency_ms: Math.round(performance.now() - start),
+      model: "gpt-4o-mini",
+      ok: true,
+    });
+    return { output, mode: "live" };
   }
 
   await sleep(1700);
@@ -223,28 +281,32 @@ export async function runAssignmentAgent(
 ): Promise<{ output: AssignmentAgentOutput; mode: RunMode }> {
   const start = performance.now();
   if (HAS_LIVE_BACKEND) {
-    try {
-      const res = await fetchWithTimeout(
-        `${API_BASE}/api/agents/assignment`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ requirement_id: requirementId }),
-        },
-        15000
-      );
-      if (!res.ok) throw new Error(String(res.status));
-      const output: AssignmentAgentOutput = await res.json();
+    const res = await fetchWithTimeout(
+      `${API_BASE}/api/agents/assignment`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ requirement_id: requirementId }),
+      },
+      90000
+    );
+    if (!res.ok) {
       useAppStore.getState().pushAgentLog({
         agent: "assignment",
         latency_ms: Math.round(performance.now() - start),
         model: "gpt-4o-mini",
-        ok: true,
+        ok: false,
       });
-      return { output, mode: "live" };
-    } catch {
-      // sigue a la simulación
+      throw new Error(`Assignment Agent falló (${res.status}): ${await readErrorDetail(res)}`);
     }
+    const output: AssignmentAgentOutput = await res.json();
+    useAppStore.getState().pushAgentLog({
+      agent: "assignment",
+      latency_ms: Math.round(performance.now() - start),
+      model: "gpt-4o-mini",
+      ok: true,
+    });
+    return { output, mode: "live" };
   }
 
   await sleep(1300);
@@ -430,6 +492,41 @@ export async function createTicket(input: CreateTicketInput): Promise<{ ticket: 
     }
   }
   return { ticket: null, mode: "mock" };
+}
+
+export async function createProject(input: CreateProjectInput): Promise<{ project: Project | null; mode: RunMode }> {
+  if (HAS_LIVE_BACKEND) {
+    try {
+      const res = await fetchWithTimeout(
+        `${API_BASE}/api/projects`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(input),
+        },
+        10000
+      );
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(text || String(res.status));
+      }
+      return { project: (await res.json()) as Project, mode: "live" };
+    } catch {
+      // cae a mock
+    }
+  }
+  await sleep(200);
+  const project: Project = {
+    id: `proj-${Date.now()}`,
+    team_id: "demo",
+    name: input.name,
+    code: input.code ?? null,
+    description: input.description ?? null,
+    business_area: input.business_area ?? null,
+    status: "active",
+    owner_id: input.owner_id ?? null,
+  };
+  return { project, mode: "mock" };
 }
 
 export async function fetchTicketComments(ticketId: string): Promise<TicketComment[]> {
@@ -627,4 +724,494 @@ export async function fetchPlans(): Promise<Plan[]> {
   } catch {
     return [];
   }
+}
+
+// ─── Knowledge Ops ───────────────────────────────────────────────────────────
+
+export async function fetchMemberDocs(memberId: string): Promise<{ docs: MemberDocs; mode: RunMode }> {
+  if (HAS_LIVE_BACKEND) {
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/api/members/${memberId}/docs`, {}, 8000);
+      if (!res.ok) throw new Error(String(res.status));
+      return { docs: (await res.json()) as MemberDocs, mode: "live" };
+    } catch {
+      // mock
+    }
+  }
+  await sleep(200);
+  return { docs: mockFetchMemberDocs(memberId), mode: "mock" };
+}
+
+export async function saveMemberDocs(
+  memberId: string,
+  mdBody: string
+): Promise<{ docs: MemberDocs; mode: RunMode }> {
+  if (HAS_LIVE_BACKEND) {
+    try {
+      const res = await fetchWithTimeout(
+        `${API_BASE}/api/members/${memberId}/docs`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ md_body: mdBody }),
+        },
+        12000
+      );
+      if (!res.ok) throw new Error(String(res.status));
+      return { docs: (await res.json()) as MemberDocs, mode: "live" };
+    } catch {
+      // mock
+    }
+  }
+  await sleep(250);
+  return { docs: mockSaveMemberDocs(memberId, mdBody), mode: "mock" };
+}
+
+export async function fetchMemberProjectNotes(
+  memberId: string
+): Promise<{ notes: MemberProjectNote[]; mode: RunMode }> {
+  if (HAS_LIVE_BACKEND) {
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/api/members/${memberId}/project-notes`, {}, 8000);
+      if (!res.ok) throw new Error(String(res.status));
+      return { notes: (await res.json()) as MemberProjectNote[], mode: "live" };
+    } catch {
+      // mock
+    }
+  }
+  await sleep(150);
+  return { notes: [], mode: "mock" };
+}
+
+export async function saveMemberProjectNote(
+  memberId: string,
+  projectId: string,
+  input: { md_notes: string; role_in_project?: string; importance_pct?: number }
+): Promise<{ note: MemberProjectNote | null; mode: RunMode }> {
+  if (HAS_LIVE_BACKEND) {
+    try {
+      const res = await fetchWithTimeout(
+        `${API_BASE}/api/members/${memberId}/project-notes/${projectId}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(input),
+        },
+        10000
+      );
+      if (!res.ok) throw new Error(String(res.status));
+      return { note: (await res.json()) as MemberProjectNote, mode: "live" };
+    } catch {
+      // mock
+    }
+  }
+  await sleep(200);
+  return {
+    note: {
+      project_id: projectId,
+      project_name: "Proyecto",
+      role_in_project: input.role_in_project || "contributor",
+      md_notes: input.md_notes,
+      importance_pct: input.importance_pct ?? 50,
+    },
+    mode: "mock",
+  };
+}
+
+export async function assignMemberToProject(
+  memberId: string,
+  projectId: string,
+  role: "owner" | "contributor" | "stakeholder" = "contributor",
+  roleInProject?: string
+): Promise<{ note: MemberProjectNote | null; mode: RunMode }> {
+  if (HAS_LIVE_BACKEND) {
+    try {
+      const res = await fetchWithTimeout(
+        `${API_BASE}/api/members/${memberId}/projects`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            project_id: projectId,
+            role,
+            role_in_project: roleInProject,
+          }),
+        },
+        10000
+      );
+      if (!res.ok) throw new Error(String(res.status));
+      return { note: (await res.json()) as MemberProjectNote, mode: "live" };
+    } catch {
+      // mock
+    }
+  }
+  await sleep(200);
+  return { note: null, mode: "mock" };
+}
+
+export async function unassignMemberFromProject(
+  memberId: string,
+  projectId: string
+): Promise<{ ok: boolean; mode: RunMode }> {
+  if (HAS_LIVE_BACKEND) {
+    try {
+      const res = await fetchWithTimeout(
+        `${API_BASE}/api/members/${memberId}/projects/${projectId}`,
+        { method: "DELETE" },
+        8000
+      );
+      if (!res.ok && res.status !== 204) throw new Error(String(res.status));
+      return { ok: true, mode: "live" };
+    } catch {
+      // mock
+    }
+  }
+  await sleep(150);
+  return { ok: true, mode: "mock" };
+}
+
+export async function fetchMemberDuties(memberId: string): Promise<{ duties: MemberDuty[]; mode: RunMode }> {
+  if (HAS_LIVE_BACKEND) {
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/api/members/${memberId}/duties`, {}, 6000);
+      if (!res.ok) throw new Error(String(res.status));
+      return { duties: (await res.json()) as MemberDuty[], mode: "live" };
+    } catch {
+      // mock
+    }
+  }
+  await sleep(180);
+  return { duties: mockGetMemberDuties(memberId), mode: "mock" };
+}
+
+export async function createMemberDuty(
+  memberId: string,
+  input: { title: string; description?: string; duty_type: DutyType; load_pct: number; hours_per_week?: number }
+): Promise<{ duty: MemberDuty | null; mode: RunMode }> {
+  if (HAS_LIVE_BACKEND) {
+    try {
+      const res = await fetchWithTimeout(
+        `${API_BASE}/api/members/${memberId}/duties`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(input),
+        },
+        8000
+      );
+      if (!res.ok) throw new Error(String(res.status));
+      return { duty: (await res.json()) as MemberDuty, mode: "live" };
+    } catch {
+      // mock
+    }
+  }
+  await sleep(220);
+  return { duty: mockCreateMemberDuty(memberId, input), mode: "mock" };
+}
+
+export async function deleteMemberDuty(dutyId: string): Promise<{ ok: boolean; mode: RunMode }> {
+  if (HAS_LIVE_BACKEND) {
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/api/member-duties/${dutyId}`, { method: "DELETE" }, 8000);
+      if (!res.ok) throw new Error(String(res.status));
+      return { ok: true, mode: "live" };
+    } catch {
+      // mock
+    }
+  }
+  await sleep(180);
+  return { ok: mockDeleteMemberDuty(dutyId), mode: "mock" };
+}
+
+export async function fetchMemberAbsences(memberId: string): Promise<{ absences: MemberAbsence[]; mode: RunMode }> {
+  if (HAS_LIVE_BACKEND) {
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/api/members/${memberId}/absences`, {}, 6000);
+      if (!res.ok) throw new Error(String(res.status));
+      return { absences: (await res.json()) as MemberAbsence[], mode: "live" };
+    } catch {
+      // mock
+    }
+  }
+  await sleep(180);
+  return { absences: mockGetMemberAbsences(memberId), mode: "mock" };
+}
+
+export async function createMemberAbsence(
+  memberId: string,
+  input: { start_date: string; end_date: string; reason?: string }
+): Promise<{ absence: MemberAbsence | null; mode: RunMode }> {
+  if (HAS_LIVE_BACKEND) {
+    try {
+      const res = await fetchWithTimeout(
+        `${API_BASE}/api/members/${memberId}/absences`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(input),
+        },
+        8000
+      );
+      if (!res.ok) throw new Error(String(res.status));
+      return { absence: (await res.json()) as MemberAbsence, mode: "live" };
+    } catch {
+      // mock
+    }
+  }
+  await sleep(220);
+  return { absence: mockCreateMemberAbsence(memberId, input), mode: "mock" };
+}
+
+export async function fetchMemberCapacity(memberId: string): Promise<{ capacity: MemberCapacity; mode: RunMode }> {
+  if (HAS_LIVE_BACKEND) {
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/api/members/${memberId}/capacity`, {}, 6000);
+      if (!res.ok) throw new Error(String(res.status));
+      return { capacity: (await res.json()) as MemberCapacity, mode: "live" };
+    } catch {
+      // mock
+    }
+  }
+  await sleep(150);
+  return { capacity: mockGetMemberCapacity(memberId), mode: "mock" };
+}
+
+export async function updateMemberCapacity(
+  memberId: string,
+  weeklyHours: number
+): Promise<{ capacity: MemberCapacity; mode: RunMode }> {
+  if (HAS_LIVE_BACKEND) {
+    try {
+      const res = await fetchWithTimeout(
+        `${API_BASE}/api/members/${memberId}/capacity`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ weekly_hours: weeklyHours }),
+        },
+        8000
+      );
+      if (!res.ok) throw new Error(String(res.status));
+      return { capacity: (await res.json()) as MemberCapacity, mode: "live" };
+    } catch {
+      // mock
+    }
+  }
+  await sleep(200);
+  return { capacity: mockUpdateMemberCapacity(memberId, weeklyHours), mode: "mock" };
+}
+
+export async function fetchProjectModules(projectId: string): Promise<{ modules: ProjectModule[]; mode: RunMode }> {
+  if (HAS_LIVE_BACKEND) {
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/api/projects/${projectId}/modules`, {}, 6000);
+      if (!res.ok) throw new Error(String(res.status));
+      return { modules: (await res.json()) as ProjectModule[], mode: "live" };
+    } catch {
+      // mock
+    }
+  }
+  await sleep(180);
+  return { modules: mockGetProjectModules(projectId), mode: "mock" };
+}
+
+export async function createProjectModule(
+  projectId: string,
+  input: Pick<ProjectModule, "name" | "code" | "summary" | "md_body" | "expected_outcomes">
+): Promise<{ module: ProjectModule | null; mode: RunMode }> {
+  if (HAS_LIVE_BACKEND) {
+    try {
+      const res = await fetchWithTimeout(
+        `${API_BASE}/api/projects/${projectId}/modules`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(input),
+        },
+        8000
+      );
+      if (!res.ok) throw new Error(String(res.status));
+      return { module: (await res.json()) as ProjectModule, mode: "live" };
+    } catch {
+      // mock
+    }
+  }
+  await sleep(220);
+  return { module: mockCreateProjectModule(projectId, input), mode: "mock" };
+}
+
+export async function updateProjectModule(
+  moduleId: string,
+  patch: Partial<Pick<ProjectModule, "name" | "summary" | "md_body" | "expected_outcomes" | "status">>
+): Promise<{ module: ProjectModule | null; mode: RunMode }> {
+  if (HAS_LIVE_BACKEND) {
+    try {
+      const res = await fetchWithTimeout(
+        `${API_BASE}/api/project-modules/${moduleId}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(patch),
+        },
+        8000
+      );
+      if (!res.ok) throw new Error(String(res.status));
+      return { module: (await res.json()) as ProjectModule, mode: "live" };
+    } catch {
+      // mock
+    }
+  }
+  await sleep(200);
+  return { module: mockUpdateProjectModule(moduleId, patch), mode: "mock" };
+}
+
+export async function fetchProjectStakeholders(
+  projectId: string
+): Promise<{ stakeholders: ProjectStakeholder[]; mode: RunMode }> {
+  if (HAS_LIVE_BACKEND) {
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/api/projects/${projectId}/stakeholders`, {}, 6000);
+      if (!res.ok) throw new Error(String(res.status));
+      return { stakeholders: (await res.json()) as ProjectStakeholder[], mode: "live" };
+    } catch {
+      // mock
+    }
+  }
+  await sleep(150);
+  return { stakeholders: mockGetProjectStakeholders(projectId), mode: "mock" };
+}
+
+export async function createProjectStakeholder(
+  projectId: string,
+  input: Pick<ProjectStakeholder, "member_id" | "role_in_project" | "importance_pct" | "md_notes">
+): Promise<{ stakeholder: ProjectStakeholder | null; mode: RunMode }> {
+  if (HAS_LIVE_BACKEND) {
+    try {
+      const res = await fetchWithTimeout(
+        `${API_BASE}/api/projects/${projectId}/stakeholders`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(input),
+        },
+        8000
+      );
+      if (!res.ok) throw new Error(String(res.status));
+      return { stakeholder: (await res.json()) as ProjectStakeholder, mode: "live" };
+    } catch {
+      // mock
+    }
+  }
+  await sleep(200);
+  return { stakeholder: mockCreateProjectStakeholder(projectId, input), mode: "mock" };
+}
+
+export async function uploadProjectDoc(
+  projectId: string,
+  title: string,
+  mdBody: string,
+  sourceType: string = "project_overview"
+): Promise<{ ok: boolean; mode: RunMode }> {
+  if (HAS_LIVE_BACKEND) {
+    try {
+      const res = await fetchWithTimeout(
+        `${API_BASE}/api/projects/${projectId}/docs`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title, md_body: mdBody, source_type: sourceType }),
+        },
+        8000
+      );
+      if (!res.ok) throw new Error(String(res.status));
+      return { ok: true, mode: "live" };
+    } catch {
+      // mock
+    }
+  }
+  await sleep(250);
+  mockUploadProjectDoc(projectId, mdBody);
+  return { ok: true, mode: "mock" };
+}
+
+export async function fetchProjectKnowledge(projectId: string): Promise<{ knowledge: KnowledgeSummary; mode: RunMode }> {
+  if (HAS_LIVE_BACKEND) {
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/api/projects/${projectId}/knowledge`, {}, 8000);
+      if (!res.ok) throw new Error(String(res.status));
+      return { knowledge: (await res.json()) as KnowledgeSummary, mode: "live" };
+    } catch {
+      // mock
+    }
+  }
+  await sleep(200);
+  return { knowledge: mockFetchProjectKnowledge(projectId), mode: "mock" };
+}
+
+export async function fetchReorgProposals(
+  status?: string
+): Promise<{ proposals: ReorgProposal[]; mode: RunMode }> {
+  if (HAS_LIVE_BACKEND) {
+    try {
+      const qs = status ? `?status=${encodeURIComponent(status)}` : "";
+      const res = await fetchWithTimeout(`${API_BASE}/api/reorg/proposals${qs}`, {}, 8000);
+      if (!res.ok) throw new Error(String(res.status));
+      return { proposals: (await res.json()) as ReorgProposal[], mode: "live" };
+    } catch {
+      // mock
+    }
+  }
+  await sleep(220);
+  return { proposals: mockGetReorgProposals(status), mode: "mock" };
+}
+
+export async function decideReorgProposal(
+  id: string,
+  decision: "approved" | "rejected",
+  note?: string
+): Promise<{ proposal: ReorgProposal | null; mode: RunMode }> {
+  if (HAS_LIVE_BACKEND) {
+    try {
+      const res = await fetchWithTimeout(
+        `${API_BASE}/api/reorg/proposals/${id}/decide`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ decision, note }),
+        },
+        8000
+      );
+      if (!res.ok) throw new Error(String(res.status));
+      return { proposal: (await res.json()) as ReorgProposal, mode: "live" };
+    } catch {
+      // mock
+    }
+  }
+  await sleep(300);
+  return { proposal: mockDecideReorgProposal(id, decision, note), mode: "mock" };
+}
+
+export async function triggerReorgAgent(
+  memberId: string,
+  absenceId?: string
+): Promise<{ proposal: ReorgProposal | null; mode: RunMode }> {
+  if (HAS_LIVE_BACKEND) {
+    try {
+      const res = await fetchWithTimeout(
+        `${API_BASE}/api/reorg/trigger`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ member_id: memberId, absence_id: absenceId }),
+        },
+        12000
+      );
+      if (!res.ok) throw new Error(String(res.status));
+      return { proposal: (await res.json()) as ReorgProposal, mode: "live" };
+    } catch {
+      // mock
+    }
+  }
+  await sleep(900);
+  return { proposal: mockTriggerReorgAgent(memberId, absenceId), mode: "mock" };
 }

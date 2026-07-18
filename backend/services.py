@@ -14,28 +14,75 @@ from supabase import create_client, Client
 
 try:
     from .config import get_settings
-    from .schemas import MeetingAgentOutput, AssignmentAgentOutput
+    from .schemas import (
+        AssignmentAgentOutput,
+        AssignmentRecommendation,
+        GranularTicket,
+        MeetingAgentOutput,
+    )
 except ImportError:  # Permite `uvicorn main:app` desde backend/.
     from config import get_settings
-    from schemas import MeetingAgentOutput, AssignmentAgentOutput
+    from schemas import (
+        AssignmentAgentOutput,
+        AssignmentRecommendation,
+        GranularTicket,
+        MeetingAgentOutput,
+    )
 
 logger = logging.getLogger("app.services")
 
 MEETING_SYSTEM_PROMPT = (
-    "Eres un Product Manager técnico senior. Del transcript en español extrae: "
-    "(1) resumen de 2-3 frases, (2) tickets accionables y GRANULARES. "
-    "No generes tickets genéricos como 'hacer landing'. Divide cada feature en fases ejecutables: "
-    "descubrimiento/mapeo, Figma/UX, diseño visual, frontend, backend/API, base de datos/inventario, QA, deploy. "
-    "Cada ticket debe tener título corto, descripción concreta, priority, estimate_hours realista y required_skill. "
-    "Si recibes tickets existentes en el contexto, evita duplicarlos; crea solo trabajo nuevo o complementario."
+    "Eres un Product Manager técnico senior de Maxxi Group (IT interno El Salvador). "
+    "Del transcript en español producís: (1) resumen 2-4 frases, (2) tickets con JERARQUÍA.\n"
+    "\n"
+    "JERARQUÍA (obligatorio):\n"
+    "- 2–5 ÉPICAS raíz (parent_title=null): entregables grandes del stakeholder.\n"
+    "- Debajo de cada épica, 1–3 SUBTAREAS con parent_title = título exacto de la épica "
+    "(discovery, implementación, QA, etc.).\n"
+    "- Total 4–16 ítems. PROHIBIDO inundar el board con 12+ tickets sueltos sin padre.\n"
+    "- Ejemplo Cayena: épica 'Documento de producción Exactus' + subtareas "
+    "(layout bodega/artículos, existencias, guardar→transacción, QA digitadores).\n"
+    "\n"
+    "CALIDAD:\n"
+    "- PROHIBIDO títulos vagos: 'hacer API', 'mejorar Exactus', 'ajustar UI', 'implementar ERP'.\n"
+    "- description: proceso AS-IS → TO-BE, sistema (Exactus / Softland / Cayena / web Maxxi), "
+    "quién lo usa (digitación, producción, finanzas) y entregable medible.\n"
+    "- acceptance_criteria: checklist con ≥3 bullets '- ...'.\n"
+    "- knowledge_evidence: cita corta casi literal del transcript o del RAG.\n"
+    "- related_db_tables en snake_case si aplica; depends_on_titles entre tickets de la misma cadena.\n"
+    "- Normalizá 'Exacto'/'Exactos' → Exactus cuando el contexto sea el ERP.\n"
+    "\n"
+    "SKILLS (elegí el MÁS ESPECÍFICO):\n"
+    "- erp_exactus: pantallas, transacciones, costos, existencias, pedidos, reversiones, reportes Exactus/Cayena ERP.\n"
+    "- erp_softland: Softland / conciliación Softland.\n"
+    "- csharp / sql / apps: lógica C#, jobs SQL, apps internas (si no es pantalla Exactus pura).\n"
+    "- filament / maxxi_web / web_design / frontend: web corporativa / Filament / UI web NO-Exactus.\n"
+    "- metabase / data: BI / tableros (NO reportes nativos de Exactus/Cayena).\n"
+    "- networking / docker / devops: solo si el transcript habla de redes, DNS, Docker o despliegue.\n"
+    "- NO uses 'backend' genérico si el trabajo es Exactus → usa erp_exactus o csharp.\n"
+    "- NO marques UI de Exactus/Cayena ERP como frontend/filament/web: es erp_exactus "
+    "(digitación de pedidos, bodega, existencias, consumos).\n"
+    "- Pedido de Cayena = módulo ERP Exactus → skill erp_exactus en UI y en lógica.\n"
+    "\n"
+    "ORG (si viene EQUIPO_ORG en el mensaje): respetá dominios; el jefe/DevOps NO es ejecutor por defecto.\n"
+    "Si hay CONTEXTO_RAG o tickets existentes, evitá duplicar; creá solo trabajo nuevo o complementario."
 )
 
 ASSIGNMENT_SYSTEM_PROMPT = (
-    "Eres un PM técnico. Recibes tickets y miembros con skills y effective_load (0-100), "
-    "que ya considera tickets activos y horas pendientes. Asigna cada ticket al miembro cuya skill coincida "
-    "con required_skill y que tenga menor carga efectiva. Si su effective_load > 70, sube risk_pct proporcionalmente. "
-    "Si nadie tiene la skill, asigna al de menor carga con risk_pct >= 70. "
-    "No sobrecargues al mismo developer si hay otra persona viable. reasoning: máximo 1 frase."
+    "Eres el ayudante de asignación del Jefe de IT (Maxxi). "
+    "Proponés assignee por ticket; el jefe aprueba el plan después.\n"
+    "\n"
+    "REGLAS DURAS:\n"
+    "1) NUNCA asignes a is_manager=true (Juan / Jefe IT / DevOps) si existe CUALQUIER otro "
+    "miembro no-manager viable (skill match, skill afín o menor carga). "
+    "Manager solo como ÚLTIMO RECURSO con risk_pct >= 85 y reasoning que diga 'último recurso'.\n"
+    "2) Match exacto de required_skill en members.skills primero; luego skills afines "
+    "(erp_exactus↔csharp/sql/apps; frontend↔filament/web_design/maxxi_web; data↔metabase).\n"
+    "3) Tickets erp_exactus / Exactus / Cayena ERP → solo developers con erp_exactus "
+    "(típicamente Iván o Erick). NO Christopher (web/BI) ni Jaime (redes).\n"
+    "4) Si is_absent=true o effective_load > 70 → subí risk_pct.\n"
+    "5) No sobrecargues a una sola persona si hay otra viable. reasoning: 1 frase en español.\n"
+    "6) Usá MEMBER_KNOWLEDGE (perfil MD) para respetar proyectos, stack y restricciones de cada integrante."
 )
 
 
@@ -342,10 +389,193 @@ def _record_token_usage(completion, team_id: str | None) -> None:
 
 # ---------- LLM: agentes con Structured Outputs ----------
 
+# ---------- LLM: agentes con Structured Outputs ----------
+
+_SKILL_AFFINITY: dict[str, list[str]] = {
+    "erp_exactus": ["erp_exactus", "csharp", "sql", "apps", "backend"],
+    "erp_softland": ["erp_softland", "csharp", "sql", "apps", "backend"],
+    "csharp": ["csharp", "backend", "apps", "erp_exactus"],
+    "sql": ["sql", "data", "backend", "erp_exactus"],
+    "backend": ["backend", "csharp", "apps", "erp_exactus"],
+    "frontend": ["frontend", "filament", "web_design", "maxxi_web"],
+    "filament": ["filament", "frontend", "maxxi_web", "web_design"],
+    "maxxi_web": ["maxxi_web", "frontend", "web_design", "filament"],
+    "web_design": ["web_design", "frontend", "maxxi_web"],
+    "data": ["data", "metabase", "sql"],
+    "metabase": ["metabase", "data", "sql"],
+    "devops": ["devops", "docker"],
+    "docker": ["docker", "devops"],
+    "networking": ["networking", "dns", "routing_maxxi", "cabling", "cameras"],
+    "apps": ["apps", "csharp", "backend"],
+    "qa": ["qa"],
+}
+
+_EXACTUS_HINTS = (
+    "exactus",
+    "exacto",
+    "cayena",
+    "existencia",
+    "existencias",
+    "bodega",
+    "pedido",
+    "consumo",
+    "consumos",
+    "reversi",
+    "digitaci",
+)
+
+
+def _text_blob(ticket: dict) -> str:
+    return " ".join(
+        str(ticket.get(k) or "")
+        for k in ("title", "description", "acceptance_criteria", "knowledge_evidence")
+    ).lower()
+
+
+def normalize_ticket_skill(ticket: dict) -> dict:
+    """Rewrite mislabeled skills when the ticket is clearly Exactus/Cayena ERP work."""
+    blob = _text_blob(ticket)
+    skill = (ticket.get("required_skill") or "").strip()
+    if any(h in blob for h in _EXACTUS_HINTS):
+        # UI/reportes de Exactus/Cayena no son Filament/web Maxxi.
+        if skill in {"frontend", "filament", "web_design", "maxxi_web", "metabase", "data", "backend", ""}:
+            return {**ticket, "required_skill": "erp_exactus"}
+    return ticket
+
+
+def _load_of(member: dict) -> float:
+    return float(member.get("effective_load", member.get("current_load", 0)) or 0)
+
+
+def resolve_assignee(
+    ticket: dict,
+    members: list[dict],
+) -> tuple[dict | None, int, str]:
+    """Deterministic assignee picker. Managers are last resort only."""
+    ticket = normalize_ticket_skill(ticket)
+    skill = (ticket.get("required_skill") or "backend").strip()
+    non_managers = [
+        m for m in members
+        if not m.get("is_manager") and not m.get("is_absent")
+    ]
+    managers = [m for m in members if m.get("is_manager") and not m.get("is_absent")]
+
+    affinity = _SKILL_AFFINITY.get(skill, [skill])
+
+    def pool_with_skills(pool: list[dict], wanted: list[str]) -> list[dict]:
+        out: list[dict] = []
+        for m in pool:
+            skills = set(m.get("skills") or [])
+            if any(s in skills for s in wanted):
+                out.append(m)
+        return out
+
+    # 1) Exact skill among non-managers
+    exact = [m for m in non_managers if skill in (m.get("skills") or [])]
+    if exact:
+        pick = min(exact, key=_load_of)
+        risk = 15 + int(_load_of(pick) * 0.4)
+        return pick, min(risk, 70), f"Match exacto {skill}; carga {_load_of(pick):.0f}%."
+
+    # 2) Affinity among non-managers
+    related = pool_with_skills(non_managers, affinity)
+    if related:
+        pick = min(related, key=_load_of)
+        risk = 35 + int(_load_of(pick) * 0.4)
+        return pick, min(risk, 80), f"Skill afín a {skill}; carga {_load_of(pick):.0f}%."
+
+    # 3) Any non-manager (wrong skill) — high risk
+    if non_managers:
+        pick = min(non_managers, key=_load_of)
+        return pick, 75, f"Sin dueño de {skill}; menor carga no-manager (revisar)."
+
+    # 4) Manager last resort
+    if managers:
+        pick = min(managers, key=_load_of)
+        return pick, 90, "Último recurso: jefe/DevOps (nadie más disponible)."
+
+    return None, 100, "Sin miembros disponibles."
+
+
+def apply_assignment_guardrails(
+    llm_output: AssignmentAgentOutput,
+    tickets: list[dict],
+    members: list[dict],
+) -> AssignmentAgentOutput:
+    """Override LLM picks that violate org rules (esp. assigning the manager)."""
+    by_name = {m["name"].strip().lower(): m for m in members}
+    by_title = {t["title"].strip().lower(): normalize_ticket_skill(t) for t in tickets}
+    fixed: list[AssignmentRecommendation] = []
+
+    for rec in llm_output.recommendations:
+        ticket = by_title.get(rec.ticket_title.strip().lower())
+        member = by_name.get(rec.assignee_name.strip().lower())
+        if not ticket:
+            continue
+
+        must_override = False
+        if member is None:
+            must_override = True
+        elif member.get("is_manager"):
+            alt, _, _ = resolve_assignee(ticket, members)
+            if alt and not alt.get("is_manager"):
+                must_override = True
+        else:
+            skill = ticket.get("required_skill")
+            skills = set(member.get("skills") or [])
+            if skill and skill not in skills:
+                affinity = set(_SKILL_AFFINITY.get(skill, [skill]))
+                if skills.isdisjoint(affinity):
+                    alt, _, _ = resolve_assignee(ticket, members)
+                    if alt and alt["id"] != member["id"]:
+                        must_override = True
+            # Extra: Exactus domain never to web-only people
+            if any(h in _text_blob(ticket) for h in _EXACTUS_HINTS):
+                if "erp_exactus" not in skills and "csharp" not in skills:
+                    alt, _, _ = resolve_assignee(ticket, members)
+                    if alt and alt["id"] != member["id"]:
+                        must_override = True
+
+        if must_override:
+            pick, risk, reason = resolve_assignee(ticket, members)
+            if pick:
+                fixed.append(
+                    AssignmentRecommendation(
+                        ticket_title=ticket["title"],
+                        assignee_name=pick["name"],
+                        risk_pct=risk,
+                        reasoning=reason,
+                    )
+                )
+                continue
+
+        fixed.append(rec)
+
+    covered = {r.ticket_title.strip().lower() for r in fixed}
+    for t in tickets:
+        nt = normalize_ticket_skill(t)
+        if nt["title"].strip().lower() in covered:
+            continue
+        pick, risk, reason = resolve_assignee(nt, members)
+        if pick:
+            fixed.append(
+                AssignmentRecommendation(
+                    ticket_title=nt["title"],
+                    assignee_name=pick["name"],
+                    risk_pct=risk,
+                    reasoning=reason,
+                )
+            )
+
+    return AssignmentAgentOutput(recommendations=fixed)
+
+
 def run_meeting_agent(
     transcript: str,
     existing_tickets: list[dict] | None = None,
+    rag_context: dict | None = None,
     team_id: str | None = None,
+    org_roster: list[dict] | None = None,
 ) -> MeetingAgentOutput:
     """Transcript → MeetingAgentOutput. Schema garantizado por Structured Outputs.
 
@@ -358,21 +588,49 @@ def run_meeting_agent(
             "title": t.get("title"),
             "status": t.get("status"),
             "required_skill": t.get("required_skill") or t.get("skills", {}).get("code"),
+            "work_phase": t.get("work_phase"),
         }
         for t in (existing_tickets or [])
     ]
-    user_content = transcript
-    if existing_ctx:
-        user_content = (
-            f"TICKETS_EXISTENTES_DEL_PROYECTO (evita duplicar):\n{existing_ctx}\n\n"
-            f"TRANSCRIPT_NUEVO:\n{transcript}"
+    parts: list[str] = []
+    if org_roster:
+        roster_lines = []
+        for m in org_roster:
+            roster_lines.append(
+                f"- {m.get('name')}: {m.get('role')} | skills={m.get('skills', [])} "
+                f"| is_manager={bool(m.get('is_manager'))}"
+            )
+        parts.append(
+            "EQUIPO_ORG (dominios; el manager NO es ejecutor por defecto):\n"
+            + "\n".join(roster_lines)
         )
+    if rag_context:
+        chunks = rag_context.get("chunks") or []
+        if chunks:
+            chunk_text = "\n---\n".join(
+                c.get("content", "")[:800] for c in chunks[:8] if c.get("content")
+            )
+            parts.append(f"CONTEXTO_RAG (knowledge base del proyecto):\n{chunk_text}")
+        prior = rag_context.get("prior_meetings") or []
+        if prior:
+            parts.append(
+                "REUNIONES_PREVIAS:\n"
+                + "\n".join(
+                    f"- {m.get('title') or m.get('id')}: {(m.get('summary') or '')[:300]}"
+                    for m in prior[:3]
+                )
+            )
+    if existing_ctx:
+        parts.append(f"TICKETS_EXISTENTES_DEL_PROYECTO (evita duplicar):\n{existing_ctx}")
+    parts.append(f"TRANSCRIPT_NUEVO:\n{transcript}")
+    user_content = "\n\n".join(parts)
+
     start = time.perf_counter()
     ok = False
     try:
         completion = client.beta.chat.completions.parse(
             model=get_settings().OPENAI_MODEL,
-            temperature=0,
+            temperature=0.2,
             messages=[
                 {"role": "system", "content": MEETING_SYSTEM_PROMPT},
                 {"role": "user", "content": user_content},
@@ -389,9 +647,78 @@ def run_meeting_agent(
         log_agent("meeting", int((time.perf_counter() - start) * 1000), ok, team_id=team_id)
 
 
+def build_member_knowledge_context(
+    team_id: str,
+    members: list[dict],
+    tickets: list[dict],
+) -> dict[str, list[str]]:
+    """Compact RAG: global profile (k=2) + project notes only for ticket projects."""
+    try:
+        from . import knowledge
+    except ImportError:
+        import knowledge  # type: ignore[no-redef]
+
+    sb = get_supabase()
+    project_ids = list({t["project_id"] for t in tickets if t.get("project_id")})
+    query_parts = [
+        f"{t.get('title', '')} {(t.get('description') or '')[:80]}"
+        for t in tickets[:4]
+    ]
+    query = " ".join(query_parts).strip() or "asignación stack"
+
+    # Batch stakeholder notes for ticket projects (1 query).
+    notes_by_member: dict[str, list[str]] = {}
+    if project_ids:
+        try:
+            rows = (
+                sb.table("project_stakeholders")
+                .select("member_id, project_id, md_notes, role_in_project")
+                .in_("project_id", project_ids)
+                .execute()
+            ).data or []
+            proj_names: dict[str, str] = {}
+            projs = (
+                sb.table("projects").select("id, name, code").in_("id", project_ids).execute()
+            ).data or []
+            for p in projs:
+                proj_names[p["id"]] = p.get("code") or p.get("name") or p["id"]
+            for row in rows:
+                md = (row.get("md_notes") or "").strip()
+                if not md or (len(md) < 100 and "## Mi rol" in md):
+                    continue  # skip empty templates
+                label = proj_names.get(row["project_id"], "proyecto")
+                snippet = f"[{label}] {row.get('role_in_project') or ''}: {md[:350]}"
+                notes_by_member.setdefault(row["member_id"], []).append(snippet)
+        except Exception:  # noqa: BLE001
+            logger.debug("stakeholder notes for assignment skipped", exc_info=True)
+
+    context: dict[str, list[str]] = {}
+    for member in members:
+        if member.get("is_manager"):
+            continue
+        mid = member["id"]
+        snippets: list[str] = []
+        # Project-scoped first (highest signal, low tokens)
+        for s in notes_by_member.get(mid, [])[:2]:
+            snippets.append(s)
+        # Global profile only if we still have room
+        if len(snippets) < 2:
+            try:
+                global_snips = knowledge.retrieve_member_context(team_id, mid, query, k=2)
+                for g in global_snips[: 2 - len(snippets)]:
+                    snippets.append(g[:300])
+            except Exception:  # noqa: BLE001
+                pass
+        if snippets:
+            context[member["name"]] = snippets
+    return context
+
+
 def run_assignment_agent(
     tickets: list[dict],
     members: list[dict],
+    member_context: dict | None = None,
+    member_knowledge: dict[str, list[str]] | None = None,
     team_id: str | None = None,
 ) -> AssignmentAgentOutput:
     """Tickets + members → recomendaciones de asignación con % de riesgo."""
@@ -403,6 +730,8 @@ def run_assignment_agent(
             "required_skill": t.get("required_skill"),
             "priority": t.get("priority"),
             "estimate_hours": t.get("estimate_hours"),
+            "work_phase": t.get("work_phase"),
+            "description": (t.get("description") or "")[:240],
         }
         for t in tickets
     ]
@@ -411,14 +740,27 @@ def run_assignment_agent(
             "name": m["name"],
             "role": m.get("role"),
             "skills": m.get("skills", []),
+            "is_manager": bool(m.get("is_manager")),
             "current_load": m.get("current_load", 0),
             "effective_load": m.get("effective_load", m.get("current_load", 0)),
+            "duty_load_pct": m.get("duty_load_pct", 0),
+            "is_absent": m.get("is_absent", False),
             "active_ticket_count": m.get("active_ticket_count", 0),
             "active_hours": m.get("active_hours", 0),
         }
         for m in members
     ]
-    user_payload = f"TICKETS:\n{tickets_ctx}\n\nMIEMBROS DEL EQUIPO:\n{members_ctx}"
+    user_payload = (
+        "REGLA: is_manager=true solo como último recurso.\n\n"
+        f"TICKETS:\n{tickets_ctx}\n\nMIEMBROS DEL EQUIPO:\n{members_ctx}"
+    )
+    if member_context:
+        user_payload += f"\n\nMEMBER_CONTEXT (duties/absences):\n{member_context}"
+    if member_knowledge:
+        user_payload += (
+            "\n\nMEMBER_KNOWLEDGE (perfil MD por integrante — proyectos, stack, restricciones):\n"
+            f"{member_knowledge}"
+        )
 
     start = time.perf_counter()
     ok = False
@@ -436,10 +778,109 @@ def run_assignment_agent(
         if result is None:
             raise RuntimeError("El modelo no devolvió un objeto parseado")
         _record_token_usage(completion, team_id)
+        result = apply_assignment_guardrails(result, tickets, members)
         ok = True
         return result
     finally:
         log_agent("assignment", int((time.perf_counter() - start) * 1000), ok, team_id=team_id)
+
+
+def persist_granular_tickets(
+    sb: Client,
+    requirement_id: str,
+    project_id: str,
+    tickets: list[GranularTicket],
+    rag_chunks: list[dict] | None = None,
+    skill_ids_by_code: dict[str, str] | None = None,
+) -> list[str]:
+    """Insert granular tickets and link ticket_context_references to RAG chunks."""
+    if not tickets:
+        return []
+
+    skill_map = skill_ids_by_code or {}
+    title_to_id: dict[str, str] = {}
+    inserted_ids: list[str] = []
+
+    rows = []
+    for t in tickets:
+        rows.append(
+            {
+                "requirement_id": requirement_id,
+                "project_id": project_id,
+                "title": t.title,
+                "description": t.description,
+                "priority": t.priority,
+                "estimate_hours": t.estimate_hours,
+                "required_skill_id": skill_map.get(t.required_skill),
+                "status": "backlog",
+                "risk_pct": 0,
+                "work_phase": t.work_phase,
+                "acceptance_criteria": t.acceptance_criteria,
+                "is_greenfield": t.is_greenfield,
+                "related_db_tables": t.related_db_tables or None,
+            }
+        )
+
+    res = sb.table("tickets").insert(rows).execute()
+    inserted = res.data or []
+    for row in inserted:
+        title_to_id[row["title"].strip().lower()] = row["id"]
+        inserted_ids.append(row["id"])
+
+    # Resolve parent_title → parent_ticket_id and depends_on_titles → depends_on_ticket_ids
+    for ticket_obj, row in zip(tickets, inserted, strict=False):
+        patch: dict = {}
+        parent_title = (ticket_obj.parent_title or "").strip().lower()
+        if parent_title and parent_title in title_to_id and title_to_id[parent_title] != row["id"]:
+            patch["parent_ticket_id"] = title_to_id[parent_title]
+        dep_ids = [
+            title_to_id[d.strip().lower()]
+            for d in (ticket_obj.depends_on_titles or [])
+            if d.strip().lower() in title_to_id
+        ]
+        if dep_ids:
+            patch["depends_on_ticket_ids"] = dep_ids
+        if patch:
+            try:
+                sb.table("tickets").update(patch).eq("id", row["id"]).execute()
+            except Exception:  # noqa: BLE001 — columns may not exist
+                logger.debug("ticket hierarchy update skipped", exc_info=True)
+
+    # ticket_context_references from RAG chunks + knowledge_evidence
+    ref_rows: list[dict] = []
+    chunks = rag_chunks or []
+    for ticket_obj, row in zip(tickets, inserted, strict=False):
+        ticket_id = row["id"]
+        if chunks:
+            for chunk in chunks[:3]:
+                ref_rows.append(
+                    {
+                        "ticket_id": ticket_id,
+                        "knowledge_chunk_id": chunk.get("id"),
+                        "project_id": project_id,
+                        "evidence_text": (ticket_obj.knowledge_evidence or chunk.get("content", ""))[:500],
+                        "relevance_pct": int((chunk.get("similarity") or 0.7) * 100)
+                        if chunk.get("similarity") is not None
+                        else 75,
+                    }
+                )
+        elif ticket_obj.knowledge_evidence:
+            ref_rows.append(
+                {
+                    "ticket_id": ticket_id,
+                    "project_id": project_id,
+                    "evidence_text": ticket_obj.knowledge_evidence[:500],
+                    "relevance_pct": 60,
+                }
+            )
+
+    if ref_rows:
+        try:
+            sb.table("ticket_context_references").insert(ref_rows).execute()
+        except Exception:  # noqa: BLE001
+            logger.exception("No se pudo escribir ticket_context_references (ignorado)")
+
+    return inserted_ids
 
 
 # ---------- ElevenLabs STT (Scribe) ----------
