@@ -1040,12 +1040,29 @@ def patch_ticket(ticket_id: str, body: TicketPatch, auth: TeamAuth):
     if not res.data:
         raise HTTPException(status_code=404, detail="Ticket no encontrado")
 
+    ticket_row = res.data[0]
     if "status" in updates:
         services.log_ticket_status_event(
             ticket_id, previous_status, updates["status"], source="web"
         )
+        # Cuando un ticket pasa a done, appendeá la función al MD del proyecto (changelog).
+        if (
+            updates["status"] == "done"
+            and previous_status != "done"
+            and ticket_row.get("project_id")
+            and auth.team_id
+        ):
+            try:
+                knowledge.append_ticket_to_project_md(
+                    auth.team_id,
+                    ticket_row["project_id"],
+                    ticket_row,
+                    created_by_id=auth.user_id,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("Failed to sync ticket %s into project MD", ticket_id)
 
-    return res.data[0]
+    return ticket_row
 
 
 # ---------- 5. Aprobar ----------

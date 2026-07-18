@@ -24,6 +24,8 @@ try:
         MemberDutyIn,
         MemberDutyOut,
         ProjectDocIn,
+        ProjectDocOut,
+        ProjectDocUpdateIn,
         ProjectModuleIn,
         ProjectModuleOut,
         ProjectModulePatch,
@@ -54,6 +56,8 @@ except ImportError:  # Permite `uvicorn main:app` desde backend/.
         MemberDutyIn,
         MemberDutyOut,
         ProjectDocIn,
+        ProjectDocOut,
+        ProjectDocUpdateIn,
         ProjectModuleIn,
         ProjectModuleOut,
         ProjectModulePatch,
@@ -400,7 +404,7 @@ def create_project_stakeholder(project_id: str, body: ProjectStakeholderIn, auth
     return res.data[0]
 
 
-# ---------- Project docs ingest ----------
+# ---------- Project docs ingest / update ----------
 
 @router.post("/api/projects/{project_id}/docs", status_code=201)
 def upload_project_doc(project_id: str, body: ProjectDocIn, auth: TeamAuth):
@@ -412,10 +416,78 @@ def upload_project_doc(project_id: str, body: ProjectDocIn, auth: TeamAuth):
         md_body=body.md_body,
         source_type=body.source_type,
         created_by_id=auth.user_id,
+        source_id=body.source_id,
+        mode=body.mode,
     )
     if not source_id:
         raise HTTPException(status_code=500, detail="No se pudo ingerir el documento")
     return {"source_id": source_id, "ok": True}
+
+
+@router.get("/api/projects/{project_id}/docs/{source_id}", response_model=ProjectDocOut)
+def get_project_doc(project_id: str, source_id: str, auth: TeamAuth):
+    _assert_project(auth.team_id, project_id)  # type: ignore[arg-type]
+    sb = _sb()
+    rows = (
+        sb.table("project_knowledge_sources")
+        .select("id, project_id, title, source_type, raw_content, summary, updated_at, created_at")
+        .eq("id", source_id)
+        .eq("project_id", project_id)
+        .limit(1)
+        .execute()
+    ).data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="Documento no encontrado")
+    return rows[0]
+
+
+@router.put("/api/projects/{project_id}/docs/{source_id}", response_model=ProjectDocOut)
+def update_project_doc(project_id: str, source_id: str, body: ProjectDocUpdateIn, auth: TeamAuth):
+    """Replace or append MD content for an existing knowledge source; re-chunks + graph."""
+    _assert_project(auth.team_id, project_id)  # type: ignore[arg-type]
+    sb = _sb()
+    rows = (
+        sb.table("project_knowledge_sources")
+        .select("id, project_id, title, source_type, raw_content, summary, updated_at, created_at")
+        .eq("id", source_id)
+        .eq("project_id", project_id)
+        .limit(1)
+        .execute()
+    ).data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="Documento no encontrado")
+    current = rows[0]
+    title = (body.title or current.get("title") or "Documento").strip()
+    if body.mode == "append":
+        addition = (body.md_body or "").strip()
+        if not addition:
+            raise HTTPException(status_code=400, detail="md_body vacío para append")
+        md_body = addition
+    else:
+        if body.md_body is None:
+            raise HTTPException(status_code=400, detail="md_body requerido para replace")
+        md_body = body.md_body
+
+    new_id = knowledge.ingest_markdown(
+        auth.team_id,  # type: ignore[arg-type]
+        project_id,
+        title=title,
+        md_body=md_body,
+        source_type=current.get("source_type") or "document",
+        created_by_id=auth.user_id,
+        source_id=source_id,
+        mode=body.mode,
+    )
+    if not new_id:
+        raise HTTPException(status_code=500, detail="No se pudo actualizar el documento")
+    refreshed = (
+        sb.table("project_knowledge_sources")
+        .select("id, project_id, title, source_type, raw_content, summary, updated_at, created_at")
+        .eq("id", new_id)
+        .limit(1)
+        .execute()
+    ).data or []
+    return refreshed[0] if refreshed else {**current, "title": title, "raw_content": md_body}
 
 
 # ---------- Knowledge summary ----------

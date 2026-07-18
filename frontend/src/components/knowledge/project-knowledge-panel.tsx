@@ -3,10 +3,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
-import { Upload, Network, FileText, RefreshCw } from "lucide-react";
+import { Upload, Network, FileText, RefreshCw, Pencil, PlusSquare, Save, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { fetchProjectKnowledge, uploadProjectDoc } from "@/lib/api";
+import { MarkdownEditor } from "@/components/knowledge/markdown-editor";
+import {
+  fetchProjectDoc,
+  fetchProjectKnowledge,
+  updateProjectDoc,
+  uploadProjectDoc,
+} from "@/lib/api";
 import type { KnowledgeSummary } from "@/lib/types";
+
+type SourceRow = NonNullable<KnowledgeSummary["sources"]>[number];
 
 export function ProjectKnowledgePanel({
   projectId,
@@ -19,6 +27,11 @@ export function ProjectKnowledgePanel({
   const [knowledge, setKnowledge] = useState<KnowledgeSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [editing, setEditing] = useState<SourceRow | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editBody, setEditBody] = useState("");
+  const [editMode, setEditMode] = useState<"replace" | "append">("replace");
+  const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -31,26 +44,72 @@ export function ProjectKnowledgePanel({
     void load();
   }, [load]);
 
+  async function openEditor(source: SourceRow, mode: "replace" | "append") {
+    setEditing(source);
+    setEditMode(mode);
+    setEditTitle(source.title);
+    setEditBody("");
+    if (mode === "replace") {
+      const { doc } = await fetchProjectDoc(projectId, source.id);
+      setEditBody(doc?.raw_content ?? "");
+    } else {
+      setEditBody("## Nueva función\n\n- Qué hace:\n- Dónde vive:\n");
+    }
+  }
+
+  async function handleSaveEdit() {
+    if (!editing) return;
+    setSaving(true);
+    const { ok, error } = await updateProjectDoc(projectId, editing.id, {
+      title: editTitle,
+      md_body: editBody,
+      mode: editMode,
+    });
+    setSaving(false);
+    if (!ok) {
+      toast.error(error || "No se pudo guardar el MD");
+      return;
+    }
+    toast.success(editMode === "append" ? "Sección agregada al MD" : "MD actualizado");
+    setEditing(null);
+    await load();
+  }
+
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (!file.name.toLowerCase().endsWith(".md")) {
+    const files = Array.from(e.target.files ?? []);
+    if (files.length === 0) return;
+    const mdFiles = files.filter((f) => f.name.toLowerCase().endsWith(".md"));
+    if (mdFiles.length === 0) {
       toast.error("Solo archivos .md");
       return;
     }
+    if (mdFiles.length < files.length) {
+      toast.message("Se ignoraron archivos que no son .md");
+    }
     setUploading(true);
+    let okCount = 0;
     try {
-      const text = await file.text();
-      const title = file.name.replace(/\.md$/i, "").replace(/[-_]/g, " ");
-      const { ok } = await uploadProjectDoc(projectId, title, text, "document");
-      if (ok) {
-        toast.success(`Nodo "${title}" ingerido al grafo`);
+      for (const file of mdFiles) {
+        const text = await file.text();
+        const title = file.name.replace(/\.md$/i, "").replace(/[-_]/g, " ");
+        // Mismo título → actualiza el MD existente (no duplica).
+        const { ok, error } = await uploadProjectDoc(projectId, title, text, "document", {
+          mode: "replace",
+        });
+        if (ok) {
+          okCount += 1;
+        } else {
+          toast.error(`Falló "${title}": ${error || "error desconocido"}`);
+        }
+      }
+      if (okCount > 0) {
+        toast.success(
+          okCount === 1 ? "1 MD ingerido / actualizado" : `${okCount} MD ingeridos / actualizados`
+        );
         await load();
-      } else {
-        toast.error("No se pudo subir el MD");
       }
     } catch {
-      toast.error("Error leyendo el archivo");
+      toast.error("Error leyendo los archivos");
     } finally {
       setUploading(false);
       if (fileRef.current) fileRef.current.value = "";
@@ -70,7 +129,7 @@ export function ProjectKnowledgePanel({
             Nodos MD del proyecto {projectCode ? `(${projectCode})` : ""}
           </p>
           <p className="text-xs text-neutral-500">
-            Subí .md → chunks + embeddings + nodos en el grafo. Compartido con todo el equipo.
+            Subí o editá .md. Los tickets en done agregan funciones al changelog automáticamente.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -104,6 +163,7 @@ export function ProjectKnowledgePanel({
           ref={fileRef}
           type="file"
           accept=".md,text/markdown"
+          multiple
           className="hidden"
           onChange={handleFile}
         />
@@ -114,9 +174,47 @@ export function ProjectKnowledgePanel({
           onClick={() => fileRef.current?.click()}
         >
           <Upload className="size-4" />
-          Subir archivo .md
+          Subir / actualizar .md
         </Button>
       </div>
+
+      {editing && (
+        <div className="space-y-3 rounded-xl border border-neutral-300 bg-white p-3 dark:border-neutral-700 dark:bg-neutral-950">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-medium">
+              {editMode === "append" ? "Agregar sección a" : "Editar"}: {editing.title}
+            </p>
+            <Button size="sm" variant="ghost" onClick={() => setEditing(null)}>
+              <X className="size-4" />
+            </Button>
+          </div>
+          <input
+            className="w-full rounded-lg border border-neutral-200 bg-transparent px-3 py-2 text-sm dark:border-neutral-700"
+            value={editTitle}
+            onChange={(e) => setEditTitle(e.target.value)}
+            placeholder="Título del documento"
+          />
+          <MarkdownEditor
+            value={editBody}
+            onChange={setEditBody}
+            placeholder={
+              editMode === "append"
+                ? "## Nueva función…"
+                : "Contenido completo del MD…"
+            }
+            rows={12}
+          />
+          <div className="flex justify-end gap-2">
+            <Button size="sm" variant="outline" onClick={() => setEditing(null)}>
+              Cancelar
+            </Button>
+            <Button size="sm" loading={saving} onClick={() => void handleSaveEdit()}>
+              <Save className="size-4" />
+              {editMode === "append" ? "Agregar sección" : "Guardar MD"}
+            </Button>
+          </div>
+        </div>
+      )}
 
       {loading ? (
         <p className="text-sm text-neutral-400">Cargando nodos…</p>
@@ -129,13 +227,21 @@ export function ProjectKnowledgePanel({
           {sources.map((s) => (
             <li
               key={s.id}
-              className="flex items-center gap-2 rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm dark:border-neutral-800 dark:bg-neutral-950"
+              className="flex flex-wrap items-center gap-2 rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm dark:border-neutral-800 dark:bg-neutral-950"
             >
               <FileText className="size-4 shrink-0 text-neutral-400" />
               <div className="min-w-0 flex-1">
                 <p className="truncate font-medium text-neutral-800 dark:text-neutral-200">{s.title}</p>
                 <p className="text-[11px] text-neutral-400">{s.source_type}</p>
               </div>
+              <Button size="sm" variant="ghost" title="Editar MD completo" onClick={() => void openEditor(s, "replace")}>
+                <Pencil className="size-3.5" />
+                Editar
+              </Button>
+              <Button size="sm" variant="ghost" title="Agregar sección ##" onClick={() => void openEditor(s, "append")}>
+                <PlusSquare className="size-3.5" />
+                + Sección
+              </Button>
             </li>
           ))}
         </ul>

@@ -366,6 +366,25 @@ class ProjectDocIn(BaseModel):
         "db_schema",
         "architecture",
     ] = "document"
+    source_id: Optional[str] = None
+    mode: Literal["replace", "append"] = "replace"
+
+
+class ProjectDocUpdateIn(BaseModel):
+    title: Optional[str] = None
+    md_body: Optional[str] = None
+    mode: Literal["replace", "append"] = "replace"
+
+
+class ProjectDocOut(BaseModel):
+    id: str
+    project_id: str
+    title: str
+    source_type: str
+    raw_content: str = ""
+    summary: Optional[str] = None
+    updated_at: Optional[str] = None
+    created_at: Optional[str] = None
 
 
 # ---------- Knowledge Ops: graph / retrieval ----------

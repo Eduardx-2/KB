@@ -1110,8 +1110,9 @@ export async function uploadProjectDoc(
   projectId: string,
   title: string,
   mdBody: string,
-  sourceType: string = "project_overview"
-): Promise<{ ok: boolean; mode: RunMode }> {
+  sourceType: string = "project_overview",
+  opts?: { sourceId?: string; mode?: "replace" | "append" }
+): Promise<{ ok: boolean; mode: RunMode; error?: string; sourceId?: string }> {
   if (HAS_LIVE_BACKEND) {
     try {
       const res = await fetchWithTimeout(
@@ -1119,19 +1120,101 @@ export async function uploadProjectDoc(
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ title, md_body: mdBody, source_type: sourceType }),
+          body: JSON.stringify({
+            title,
+            md_body: mdBody,
+            source_type: sourceType,
+            source_id: opts?.sourceId,
+            mode: opts?.mode ?? "replace",
+          }),
         },
-        8000
+        120000
       );
-      if (!res.ok) throw new Error(String(res.status));
-      return { ok: true, mode: "live" };
-    } catch {
-      // mock
+      if (!res.ok) {
+        let detail = String(res.status);
+        try {
+          const body = (await res.json()) as { detail?: unknown };
+          if (typeof body.detail === "string") detail = body.detail;
+        } catch {
+          /* ignore */
+        }
+        return { ok: false, mode: "live", error: detail };
+      }
+      const data = (await res.json()) as { source_id?: string };
+      return { ok: true, mode: "live", sourceId: data.source_id };
+    } catch (err) {
+      return {
+        ok: false,
+        mode: "live",
+        error: err instanceof Error ? err.message : "Error de red al subir MD",
+      };
     }
   }
   await sleep(250);
   mockUploadProjectDoc(projectId, mdBody);
   return { ok: true, mode: "mock" };
+}
+
+export async function fetchProjectDoc(
+  projectId: string,
+  sourceId: string
+): Promise<{ doc: { id: string; title: string; source_type: string; raw_content: string } | null; mode: RunMode }> {
+  if (HAS_LIVE_BACKEND) {
+    try {
+      const res = await fetchWithTimeout(
+        `${API_BASE}/api/projects/${projectId}/docs/${sourceId}`,
+        {},
+        10000
+      );
+      if (!res.ok) throw new Error(String(res.status));
+      return { doc: await res.json(), mode: "live" };
+    } catch {
+      // fall through
+    }
+  }
+  return { doc: null, mode: "mock" };
+}
+
+export async function updateProjectDoc(
+  projectId: string,
+  sourceId: string,
+  input: { title?: string; md_body?: string; mode?: "replace" | "append" }
+): Promise<{ ok: boolean; mode: RunMode; error?: string }> {
+  if (HAS_LIVE_BACKEND) {
+    try {
+      const res = await fetchWithTimeout(
+        `${API_BASE}/api/projects/${projectId}/docs/${sourceId}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: input.title,
+            md_body: input.md_body,
+            mode: input.mode ?? "replace",
+          }),
+        },
+        120000
+      );
+      if (!res.ok) {
+        let detail = String(res.status);
+        try {
+          const body = (await res.json()) as { detail?: unknown };
+          if (typeof body.detail === "string") detail = body.detail;
+        } catch {
+          /* ignore */
+        }
+        return { ok: false, mode: "live", error: detail };
+      }
+      return { ok: true, mode: "live" };
+    } catch (err) {
+      return {
+        ok: false,
+        mode: "live",
+        error: err instanceof Error ? err.message : "Error de red al actualizar MD",
+      };
+    }
+  }
+  return { ok: false, mode: "mock", error: "Sin backend live" };
 }
 
 export async function fetchProjectKnowledge(projectId: string): Promise<{ knowledge: KnowledgeSummary; mode: RunMode }> {

@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import uuid
 from typing import Any
 try:
     from .services import get_openai, get_supabase
@@ -16,10 +17,38 @@ _HEADING_RE = re.compile(r"^##\s+(.+)$", re.MULTILINE)
 _TABLE_RE = re.compile(r"`([a-z][a-z0-9_]{1,62})`", re.IGNORECASE)
 _EMBEDDING_MODEL = "text-embedding-3-small"
 _UPSERT_SOURCE_TYPES = frozenset({"project_overview", "developer_profile"})
+# Re-upload / save by title (same project + type + title → update in place).
+_TITLE_UPSERT_SOURCE_TYPES = frozenset(
+    {
+        "document",
+        "module_spec",
+        "architecture",
+        "db_schema",
+        "ticket_history",
+        "decision",
+        "expected_outcomes",
+        "stakeholders",
+    }
+)
+_TICKET_CHANGELOG_TITLE = "Changelog de tickets"
 
 
 def _content_hash(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
+
+
+def _as_uuid_or_none(value: str | None) -> str | None:
+    """Reject non-UUID ids (e.g. AUTH_DISABLED demo-user) before writing to uuid columns."""
+    if not value:
+        return None
+    try:
+        return str(uuid.UUID(str(value)))
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+def _normalize_title(title: str) -> str:
+    return re.sub(r"\s+", " ", (title or "").strip().lower())
 
 
 def _store_chunks(
@@ -169,61 +198,198 @@ def ingest_markdown(
     md_body: str,
     source_type: str,
     created_by_id: str | None = None,
+    source_id: str | None = None,
+    mode: str = "replace",
 ) -> str | None:
-    """Upsert source + chunks with embeddings; create graph nodes. Best-effort."""
+    """Upsert source + chunks with embeddings; create graph nodes. Best-effort.
+
+    mode:
+      - replace: overwrite raw_content
+      - append: concatenate section to existing content (creates doc if missing)
+    Lookup order: explicit source_id → singleton types → same title+type.
+    """
     try:
         sb = get_supabase()
-        source_id: str | None = None
-        if source_type in _UPSERT_SOURCE_TYPES:
-            existing = (
+        resolved_id = _as_uuid_or_none(source_id)
+        existing_row: dict[str, Any] | None = None
+
+        if resolved_id:
+            rows = (
                 sb.table("project_knowledge_sources")
-                .select("id")
+                .select("id, title, source_type, raw_content")
+                .eq("id", resolved_id)
+                .eq("project_id", project_id)
+                .limit(1)
+                .execute()
+            ).data or []
+            if rows:
+                existing_row = rows[0]
+                resolved_id = existing_row["id"]
+            else:
+                resolved_id = None
+
+        if not resolved_id and source_type in _UPSERT_SOURCE_TYPES:
+            rows = (
+                sb.table("project_knowledge_sources")
+                .select("id, title, source_type, raw_content")
                 .eq("project_id", project_id)
                 .eq("source_type", source_type)
                 .order("updated_at", desc=True)
                 .limit(1)
                 .execute()
-            ).data
-            if existing:
-                source_id = existing[0]["id"]
-                sb.table("project_knowledge_sources").update(
-                    {
-                        "title": title,
-                        "raw_content": md_body,
-                        "summary": (md_body or "")[:500],
-                        "metadata": {"team_id": team_id},
-                    }
-                ).eq("id", source_id).execute()
+            ).data or []
+            if rows:
+                existing_row = rows[0]
+                resolved_id = existing_row["id"]
 
-        if not source_id:
-            source_payload = {
+        if not resolved_id and source_type in _TITLE_UPSERT_SOURCE_TYPES:
+            rows = (
+                sb.table("project_knowledge_sources")
+                .select("id, title, source_type, raw_content")
+                .eq("project_id", project_id)
+                .eq("source_type", source_type)
+                .order("updated_at", desc=True)
+                .limit(80)
+                .execute()
+            ).data or []
+            want = _normalize_title(title)
+            for row in rows:
+                if _normalize_title(str(row.get("title") or "")) == want:
+                    existing_row = row
+                    resolved_id = row["id"]
+                    break
+
+        final_body = md_body or ""
+        if mode == "append" and existing_row:
+            prev = (existing_row.get("raw_content") or "").rstrip()
+            addition = (md_body or "").strip()
+            if addition:
+                final_body = f"{prev}\n\n{addition}".strip() if prev else addition
+            else:
+                final_body = prev
+
+        if resolved_id:
+            sb.table("project_knowledge_sources").update(
+                {
+                    "title": title or (existing_row or {}).get("title") or "Documento",
+                    "raw_content": final_body,
+                    "summary": (final_body or "")[:500],
+                    "metadata": {"team_id": team_id},
+                }
+            ).eq("id", resolved_id).execute()
+            source_id_out = resolved_id
+        else:
+            source_payload: dict[str, Any] = {
                 "project_id": project_id,
                 "title": title,
                 "source_type": source_type,
-                "raw_content": md_body,
-                "summary": (md_body or "")[:500],
-                "created_by_id": created_by_id,
+                "raw_content": final_body,
+                "summary": (final_body or "")[:500],
                 "metadata": {"team_id": team_id},
             }
+            author = _as_uuid_or_none(created_by_id)
+            if author:
+                source_payload["created_by_id"] = author
             source_res = sb.table("project_knowledge_sources").insert(source_payload).execute()
-            source_id = source_res.data[0]["id"]
+            source_id_out = source_res.data[0]["id"]
 
         _store_chunks(
             sb,
             table="project_knowledge_chunks",
-            source_id=source_id,
+            source_id=source_id_out,
             scope_id=project_id,
             scope_field="project_id",
-            md_body=md_body,
+            md_body=final_body,
         )
 
         _upsert_knowledge_nodes(
-            sb, team_id=team_id, project_id=project_id, source_id=source_id, md_body=md_body
+            sb,
+            team_id=team_id,
+            project_id=project_id,
+            source_id=source_id_out,
+            md_body=final_body,
         )
-        return source_id
+        return source_id_out
     except Exception:  # noqa: BLE001 — never crash API callers
         logger.exception("ingest_markdown failed (best-effort)")
         return None
+
+
+def build_ticket_changelog_section(ticket: dict[str, Any]) -> str:
+    """Pure helper: MD section for a completed ticket."""
+    title = (ticket.get("title") or "Ticket").strip()
+    desc = (ticket.get("description") or "").strip()
+    criteria = (ticket.get("acceptance_criteria") or "").strip()
+    skill = ticket.get("required_skill") or ""
+    ticket_id = ticket.get("id") or ""
+    lines = [
+        f"## {title}",
+        "",
+        f"- Ticket: `{ticket_id}`",
+        f"- Skill: {skill}" if skill else None,
+        "- Estado: done",
+        "",
+    ]
+    if desc:
+        lines.extend(["### Qué se agregó", "", desc, ""])
+    if criteria:
+        lines.extend(["### Criterios", "", criteria, ""])
+    return "\n".join(line for line in lines if line is not None).strip()
+
+
+def append_ticket_to_project_md(
+    team_id: str,
+    project_id: str,
+    ticket: dict[str, Any],
+    *,
+    created_by_id: str | None = None,
+) -> str | None:
+    """Append a completed ticket as a ## section into the project ticket changelog MD."""
+    ticket_id = ticket.get("id") or ""
+    section = build_ticket_changelog_section(ticket)
+
+    # Avoid duplicating the same ticket section on re-done.
+    try:
+        sb = get_supabase()
+        existing = (
+            sb.table("project_knowledge_sources")
+            .select("id, raw_content")
+            .eq("project_id", project_id)
+            .eq("source_type", "ticket_history")
+            .eq("title", _TICKET_CHANGELOG_TITLE)
+            .limit(1)
+            .execute()
+        ).data or []
+        if existing and ticket_id and ticket_id in (existing[0].get("raw_content") or ""):
+            # Replace that ticket's section by rewriting body without the old block, then append.
+            raw = existing[0].get("raw_content") or ""
+            pattern = re.compile(
+                rf"(?ms)^## .+?\n(?:.*?\n)*?- Ticket: `{re.escape(str(ticket_id))}`.*?(?=^## |\Z)"
+            )
+            cleaned = pattern.sub("", raw).strip()
+            body = f"{cleaned}\n\n{section}".strip() if cleaned else section
+            return ingest_markdown(
+                team_id,
+                project_id,
+                title=_TICKET_CHANGELOG_TITLE,
+                md_body=body,
+                source_type="ticket_history",
+                created_by_id=created_by_id,
+                source_id=existing[0]["id"],
+                mode="replace",
+            )
+    except Exception:
+        logger.debug("ticket changelog dedupe failed; appending", exc_info=True)
+
+    return ingest_markdown(
+        team_id,
+        project_id,
+        title=_TICKET_CHANGELOG_TITLE,
+        md_body=section if not section.startswith("#") else section,
+        source_type="ticket_history",
+        created_by_id=created_by_id,
+        mode="append",
+    )
 
 
 def ingest_member_markdown(
